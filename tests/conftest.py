@@ -108,6 +108,7 @@ def _install_ha_stubs() -> None:
 
     cv = types.ModuleType("homeassistant.helpers.config_validation")
     cv.string = str
+    cv.config_entry_only_config_schema = lambda _domain: lambda config: config
     sys.modules["homeassistant.helpers.config_validation"] = cv
 
     storage = types.ModuleType("homeassistant.helpers.storage")

@@ -47,6 +47,8 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "number", "select"]
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 # ---------------------------------------------------------------------------
 # Service schemas
