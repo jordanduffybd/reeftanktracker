@@ -32,6 +32,9 @@ from .const import (
     SOURCE_MANUAL,
 )
 from .coordinator import ReefDataCoordinator
+from .dashboard import install_dashboard_if_missing, regenerate_dashboard
+
+SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,6 +100,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_services(hass, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Auto-install the Lovelace dashboard (skipped if user previously
+    # removed it; a regenerate_dashboard service brings it back).
+    try:
+        await install_dashboard_if_missing(hass, coordinator)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Failed to install Reef Tank dashboard (continuing)")
+
     return True
 
 
@@ -108,7 +119,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for service in (
                 SERVICE_RECORD_READING, SERVICE_ADD_INVENTORY,
                 SERVICE_REMOVE_INVENTORY, SERVICE_SET_HABITAT,
-                SERVICE_IMPORT_ICP,
+                SERVICE_IMPORT_ICP, SERVICE_REGENERATE_DASHBOARD,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -157,6 +168,9 @@ async def _async_register_services(
     async def handle_import_icp(call: ServiceCall) -> None:
         await coordinator.async_record_icp_test(call.data["test_record"])
 
+    async def handle_regenerate_dashboard(call: ServiceCall) -> None:
+        await regenerate_dashboard(hass, coordinator)
+
     if not hass.services.has_service(DOMAIN, SERVICE_RECORD_READING):
         hass.services.async_register(
             DOMAIN, SERVICE_RECORD_READING, handle_record_reading,
@@ -177,4 +191,7 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_IMPORT_ICP, handle_import_icp,
             schema=IMPORT_ICP_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_REGENERATE_DASHBOARD, handle_regenerate_dashboard,
         )

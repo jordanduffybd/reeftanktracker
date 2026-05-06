@@ -104,7 +104,20 @@ class ReefDataCoordinator:
             "readings": [],
             "inventory": [],
             "icp_tests": [],
+            # Set to True if the user explicitly removes the auto-installed
+            # Lovelace dashboard. Prevents it from coming back on next boot.
+            "user_removed_dashboard": False,
         }
+
+    # ------------------------------------------------------------------
+    # Dashboard flag
+    # ------------------------------------------------------------------
+    def is_dashboard_user_removed(self) -> bool:
+        return bool(self._data.get("user_removed_dashboard"))
+
+    async def async_set_dashboard_user_removed(self, value: bool) -> None:
+        self._data["user_removed_dashboard"] = bool(value)
+        await self.async_save()
 
     async def async_save(self) -> None:
         await self._store.async_save(self._data)

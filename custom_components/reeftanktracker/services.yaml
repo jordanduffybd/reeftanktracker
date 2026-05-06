@@ -180,3 +180,10 @@ import_icp:
       description: Full JSON test record (test_id, sample_date, elements, matrix, ...).
       selector:
         object:
+
+regenerate_dashboard:
+  name: Regenerate Dashboard
+  description: >
+    Force a fresh build of the auto-installed Reef Tank dashboard at
+    /reef-tank-tracker. Clears the "user-removed" flag, so calling this
+    after manually deleting the dashboard will bring it back.
