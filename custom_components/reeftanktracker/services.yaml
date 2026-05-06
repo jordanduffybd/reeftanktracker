@@ -439,6 +439,23 @@ capture_snapshot_now:
           max: 1000
           step: 0.1
 
+import_triton_url:
+  name: Import Triton ICP test (URL)
+  description: >
+    Fetch a public Triton showroom URL, parse the ICP-OES report, and
+    record per-element readings + the full test record. Idempotent —
+    re-running with the same URL is a no-op (dedupe by test_id).
+    On parse failure, an HTML + parse-trace bundle is dumped to
+    `<config>/.storage/icpimport_debug/<timestamp>/` for diagnosis.
+  fields:
+    url:
+      name: Triton showroom URL
+      description: Public URL of the test result page in your Triton account.
+      required: true
+      example: "https://triton-lab.de/.../report/B-KJAZM8"
+      selector:
+        text:
+
 log_water_change:
   name: Log Water Change
   description: >

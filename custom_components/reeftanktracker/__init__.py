@@ -58,6 +58,7 @@ from .const import (
     SERVICE_CAPTURE_SNAPSHOT,
     SERVICE_SUBMIT_WC_FORM,
     SERVICE_SUBMIT_DEMAND_FORM,
+    SERVICE_IMPORT_TRITON_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -160,6 +161,10 @@ CAPTURE_SNAPSHOT_SCHEMA = vol.Schema({
     vol.Optional("at"): cv.string,
     vol.Optional("kh"): vol.Coerce(float),
     vol.Optional("dose_mL"): vol.Coerce(float),
+})
+
+IMPORT_TRITON_URL_SCHEMA = vol.Schema({
+    vol.Required("url"): cv.string,
 })
 
 
@@ -266,6 +271,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_CAPTURE_SNAPSHOT,
                 SERVICE_SUBMIT_WC_FORM,
                 SERVICE_SUBMIT_DEMAND_FORM,
+                SERVICE_IMPORT_TRITON_URL,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -444,6 +450,24 @@ async def _async_register_services(
             notes=call.data.get("notes"),
         )
 
+    async def handle_import_triton_url(call: ServiceCall) -> None:
+        from .icp_importer import import_triton_url, ParserError
+        url = call.data["url"]
+        try:
+            summary = await import_triton_url(hass, coordinator, url)
+        except ParserError as exc:
+            _LOGGER.error(
+                "Triton URL import failed: %s (debug bundle: %s)",
+                exc, exc.debug_path,
+            )
+            # Re-raise as a HomeAssistantError so the service-call dialog
+            # surfaces the message directly to the user. (vol-level
+            # ServiceValidationError would also work but ties us to a
+            # specific HA version's import path.)
+            from homeassistant.exceptions import HomeAssistantError
+            raise HomeAssistantError(str(exc)) from exc
+        _LOGGER.warning("Triton URL imported: %s", summary)
+
     async def handle_submit_water_change_form(call: ServiceCall) -> None:
         """Read the dashboard's water-change form fields and call
         log_water_change. The dashboard's "Submit" button invokes this
@@ -600,4 +624,8 @@ async def _async_register_services(
         )
         hass.services.async_register(
             DOMAIN, SERVICE_SUBMIT_DEMAND_FORM, handle_submit_demand_change_form,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_IMPORT_TRITON_URL, handle_import_triton_url,
+            schema=IMPORT_TRITON_URL_SCHEMA,
         )

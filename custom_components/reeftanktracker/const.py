@@ -88,6 +88,7 @@ SERVICE_LOG_WATER_CHANGE = "log_water_change"
 SERVICE_CAPTURE_SNAPSHOT = "capture_snapshot_now"
 SERVICE_SUBMIT_WC_FORM = "submit_water_change_form"
 SERVICE_SUBMIT_DEMAND_FORM = "submit_demand_change_form"
+SERVICE_IMPORT_TRITON_URL = "import_triton_url"
 
 # Signal names for state-change dispatching
 SIGNAL_READING_RECORDED = f"{DOMAIN}_reading_recorded"
