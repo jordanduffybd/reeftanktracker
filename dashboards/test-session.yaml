@@ -4,6 +4,10 @@
 # Each row is a number entry that auto-saves on change. The "Latest"
 # tile next to it shows what's currently recorded for that parameter
 # (most recent of manual / ICP / auto). Edit by typing a new value.
+#
+# Entity IDs are prefixed with `reef_tank_` because the integration
+# groups everything under a single "Reef Tank" device. This makes them
+# easy to find in HA: Settings → Devices → Reef Tank.
 
 title: Reef Tank
 views:
@@ -15,7 +19,7 @@ views:
     sections:
 
       # ─────────────────────────────────────────────────────────────
-      # Tank context — set habitat & problem before/after a test
+      # Tank context
       # ─────────────────────────────────────────────────────────────
       - type: grid
         column_span: 3
@@ -24,17 +28,11 @@ views:
             heading: Tank context
             icon: mdi:waves
           - type: tile
-            entity: sensor.reef_tank_habitat
+            entity: sensor.reef_tank_tank_habitat
             name: Habitat
             icon: mdi:waves
-            tap_action:
-              action: call-service
-              service: reeftanktracker.set_habitat
-              # Replace with the habitat you want to switch to:
-              data:
-                habitat: SPS Outer Reef
           - type: tile
-            entity: sensor.reef_tank_problem
+            entity: sensor.reef_tank_tank_problem
             name: Problem
             icon: mdi:alert-circle-outline
 
@@ -51,25 +49,25 @@ views:
             title: Auto-saves on entry
             show_header_toggle: false
             entities:
-              - entity: number.reef_kh_entry
+              - entity: number.reef_tank_kh_entry
                 name: KH (dKH)
                 secondary_info: last-updated
-              - entity: number.reef_calcium_entry
+              - entity: number.reef_tank_calcium_entry
                 name: Calcium (ppm)
                 secondary_info: last-updated
-              - entity: number.reef_magnesium_entry
+              - entity: number.reef_tank_magnesium_entry
                 name: Magnesium (ppm)
                 secondary_info: last-updated
-              - entity: number.reef_phosphate_entry
+              - entity: number.reef_tank_phosphate_entry
                 name: Phosphate (ppm)
                 secondary_info: last-updated
-              - entity: number.reef_nitrate_entry
+              - entity: number.reef_tank_nitrate_entry
                 name: Nitrate (ppm)
                 secondary_info: last-updated
-              - entity: number.reef_salinity_entry
+              - entity: number.reef_tank_salinity_entry
                 name: Salinity (ppt)
                 secondary_info: last-updated
-              - entity: number.reef_temperature_entry
+              - entity: number.reef_tank_temperature_entry
                 name: Temp (°C)
                 secondary_info: last-updated
 
@@ -83,7 +81,7 @@ views:
             heading: Latest values
             icon: mdi:chart-line
           - type: tile
-            entity: sensor.reef_kh_latest
+            entity: sensor.reef_tank_kh_latest
             name: KH
             color: cyan
             vertical: true
@@ -91,23 +89,23 @@ views:
               - state
               - last-changed
           - type: tile
-            entity: sensor.reef_calcium_latest
+            entity: sensor.reef_tank_calcium_latest
             name: Calcium
             vertical: true
           - type: tile
-            entity: sensor.reef_magnesium_latest
+            entity: sensor.reef_tank_magnesium_latest
             name: Magnesium
             vertical: true
           - type: tile
-            entity: sensor.reef_phosphate_latest
+            entity: sensor.reef_tank_phosphate_latest
             name: Phosphate
             vertical: true
           - type: tile
-            entity: sensor.reef_nitrate_latest
+            entity: sensor.reef_tank_nitrate_latest
             name: Nitrate
             vertical: true
           - type: tile
-            entity: sensor.reef_salinity_latest
+            entity: sensor.reef_tank_salinity_latest
             name: Salinity
             vertical: true
 
@@ -121,22 +119,22 @@ views:
             heading: Cadence & drift
             icon: mdi:calendar-check
           - type: tile
-            entity: sensor.reef_kh_days_since
+            entity: sensor.reef_tank_kh_days_since
             name: KH last test
             vertical: true
           - type: tile
-            entity: sensor.reef_kh_drift
+            entity: sensor.reef_tank_kh_drift
             name: KH drift vs auto
             vertical: true
           - type: tile
-            entity: sensor.reef_calcium_days_since
+            entity: sensor.reef_tank_calcium_days_since
             name: Ca last test
             vertical: true
           - type: tile
-            entity: sensor.reef_magnesium_days_since
+            entity: sensor.reef_tank_magnesium_days_since
             name: Mg last test
             vertical: true
           - type: tile
-            entity: sensor.reef_phosphate_days_since
+            entity: sensor.reef_tank_phosphate_days_since
             name: PO4 last test
             vertical: true

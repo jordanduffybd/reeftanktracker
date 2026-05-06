@@ -24,10 +24,19 @@ from typing import Any
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SIGNAL_READING_RECORDED, SOURCE_MANUAL
+from .const import (
+    DEVICE_ID,
+    DEVICE_MANUFACTURER,
+    DEVICE_MODEL,
+    DEVICE_NAME,
+    DOMAIN,
+    SIGNAL_READING_RECORDED,
+    SOURCE_MANUAL,
+)
 from .coordinator import ReefDataCoordinator
 from .parameters import INPUT_PARAMETERS, ParameterDef
 
@@ -50,12 +59,20 @@ class ReefEntryNumber(NumberEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_mode = NumberMode.BOX
+    _attr_device_info = DeviceInfo(
+        identifiers={(DOMAIN, DEVICE_ID)},
+        name=DEVICE_NAME,
+        manufacturer=DEVICE_MANUFACTURER,
+        model=DEVICE_MODEL,
+    )
 
     def __init__(self, coordinator: ReefDataCoordinator, param: ParameterDef) -> None:
         self._coordinator = coordinator
         self._param = param
 
         self._attr_unique_id = f"reef_{param['id']}_entry"
+        # With has_entity_name + device, entity_id becomes
+        # `number.reef_tank_<param>_entry`.
         self._attr_name = f"{param['name']} Entry"
         self._attr_icon = param.get("icon", "mdi:water")
         self._attr_native_unit_of_measurement = param.get("unit")

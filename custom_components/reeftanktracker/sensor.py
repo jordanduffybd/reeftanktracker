@@ -25,15 +25,31 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    DEVICE_ID,
+    DEVICE_MANUFACTURER,
+    DEVICE_MODEL,
+    DEVICE_NAME,
     DOMAIN,
     SIGNAL_HABITAT_CHANGED,
     SIGNAL_READING_RECORDED,
     SOURCE_MANUAL,
 )
+
+
+def _device_info() -> DeviceInfo:
+    """Single shared device — all entities attach here so they're grouped
+    in HA's UI under one row instead of 239 loose entities."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, DEVICE_ID)},
+        name=DEVICE_NAME,
+        manufacturer=DEVICE_MANUFACTURER,
+        model=DEVICE_MODEL,
+    )
 from .coordinator import ReefDataCoordinator
 from .parameters import ALL_PARAMETERS, ParameterDef
 
@@ -71,12 +87,17 @@ async def async_setup_entry(
 class _ReefSensorBase(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_device_info = _device_info()
 
     def __init__(self, coordinator: ReefDataCoordinator, param: ParameterDef,
                  suffix: str, name: str) -> None:
         self._coordinator = coordinator
         self._param = param
         self._attr_unique_id = f"reef_{param['id']}_{suffix}"
+        # Entity name combines parameter + variant (e.g. "KH Latest")
+        # With has_entity_name=True the actual entity_id becomes
+        # `sensor.reef_tank_<param>_<variant>`, derived from the device
+        # name "Reef Tank" + the entity name.
         self._attr_name = f"{param['name']} {name}"
         self._attr_icon = param.get("icon", "mdi:water")
 
@@ -253,6 +274,7 @@ class _TankSensor(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_info = _device_info()
 
     def __init__(self, coordinator: ReefDataCoordinator) -> None:
         self._coordinator = coordinator
