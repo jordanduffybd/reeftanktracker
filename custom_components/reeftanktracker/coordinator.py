@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 import logging
+import re
 import uuid
 
 from homeassistant.core import HomeAssistant
@@ -43,6 +44,7 @@ from .const import (
     DOMAIN,
     HABITATS,
     PROBLEMS,
+    SIGNAL_ADVISOR_UPDATED,
     SIGNAL_HABITAT_CHANGED,
     SIGNAL_INVENTORY_CHANGED,
     SIGNAL_READING_RECORDED,
@@ -59,6 +61,23 @@ _LOGGER = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
+
+
+def _slugify(label: str) -> str:
+    """ASCII slug: lowercase, non-alnum runs → _, strip leading/trailing _."""
+    s = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return s or "supplement"
+
+
+def _unique_slug(label: str, taken: set[str]) -> str:
+    """Slug from label with `_2`, `_3`, … suffix on collision."""
+    base = _slugify(label)
+    candidate = base
+    n = 2
+    while candidate in taken:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
 
 
 @dataclass
@@ -113,13 +132,25 @@ class ReefDataCoordinator:
         # Populated from config_entry.options at setup, falls back to
         # the parameter's hardcoded default if no override is set.
         self._auto_sources: dict[str, str] = {}
+        # Advisor config from Options flow (window_days, target band, etc.).
+        # Populated at setup; sensors read this to construct AdvisorConfig.
+        self._advisor_config: dict[str, Any] = {}
 
     async def async_load(self) -> None:
         loaded = await self._store.async_load()
         self._data = loaded or self._default_data()
         # Backfill any keys that may be missing on upgrade.
-        for k, v in self._default_data().items():
+        defaults = self._default_data()
+        for k, v in defaults.items():
             self._data.setdefault(k, v)
+        # Advisor blob has nested per-parameter structure — backfill those
+        # too so existing installs upgrade cleanly.
+        advisor_default = defaults["advisor"]
+        advisor_current = self._data.setdefault("advisor", {})
+        for param_id, param_default in advisor_default.items():
+            param_current = advisor_current.setdefault(param_id, {})
+            for k, v in param_default.items():
+                param_current.setdefault(k, v)
 
     def _default_data(self) -> dict[str, Any]:
         return {
@@ -138,6 +169,21 @@ class ReefDataCoordinator:
             # Set to True if the user explicitly removes the auto-installed
             # Lovelace dashboard. Prevents it from coming back on next boot.
             "user_removed_dashboard": False,
+            # Advisor state per parameter — daily snapshots and user events
+            # (acknowledgments, dismissals, demand-changes). The algorithm
+            # is in advisor.py; this is just persistent storage.
+            "advisor": {
+                "kh": {
+                    "snapshots": [],         # [{at, kh, dose_mL}]
+                    "acknowledgments": [],   # [{at, applied_value_mL, prev_value_mL}]
+                    "dismissals": [],        # [{at, suggested_value_mL}]
+                    "demand_changes": [],    # [{at, reason, expected_direction, magnitude_hint_pct}]
+                    "water_changes": [],     # [{at, percent, salt_mix_kh, notes}]
+                },
+            },
+            # User-added supplement profiles. Builtins live in
+            # alk_advisor.BUILTIN_PROFILES; these merge on top at runtime.
+            "supplement_profiles": [],
         }
 
     # ------------------------------------------------------------------
@@ -150,6 +196,15 @@ class ReefDataCoordinator:
     def get_auto_source(self, param_id: str) -> str | None:
         """Return the configured auto-source entity_id for a parameter, or None."""
         return self._auto_sources.get(param_id)
+
+    # ------------------------------------------------------------------
+    # Advisor config (set by __init__ from entry.options)
+    # ------------------------------------------------------------------
+    def set_advisor_config(self, cfg: dict[str, Any]) -> None:
+        self._advisor_config = dict(cfg or {})
+
+    def get_advisor_config(self) -> dict[str, Any]:
+        return dict(self._advisor_config)
 
     # ------------------------------------------------------------------
     # Dashboard flag
@@ -478,3 +533,138 @@ class ReefDataCoordinator:
     @property
     def icp_tests(self) -> list[dict[str, Any]]:
         return self._data["icp_tests"]
+
+    # ------------------------------------------------------------------
+    # Advisor state (per-parameter — currently only KH is implemented)
+    # ------------------------------------------------------------------
+    def _advisor_blob(self, param_id: str) -> dict[str, Any]:
+        """Get-or-create the per-parameter advisor sub-dict, backfilling
+        any sub-keys that may be missing on upgrade."""
+        advisor = self._data.setdefault("advisor", {})
+        blob = advisor.setdefault(param_id, {})
+        for k in (
+            "snapshots", "acknowledgments", "dismissals",
+            "demand_changes", "water_changes",
+        ):
+            blob.setdefault(k, [])
+        return blob
+
+    def advisor_snapshots(self, param_id: str) -> list[dict[str, Any]]:
+        return list(self._advisor_blob(param_id)["snapshots"])
+
+    def advisor_acknowledgments(self, param_id: str) -> list[dict[str, Any]]:
+        return list(self._advisor_blob(param_id)["acknowledgments"])
+
+    def advisor_dismissals(self, param_id: str) -> list[dict[str, Any]]:
+        return list(self._advisor_blob(param_id)["dismissals"])
+
+    def advisor_demand_changes(self, param_id: str) -> list[dict[str, Any]]:
+        return list(self._advisor_blob(param_id)["demand_changes"])
+
+    def advisor_water_changes(self, param_id: str) -> list[dict[str, Any]]:
+        return list(self._advisor_blob(param_id)["water_changes"])
+
+    async def async_record_advisor_snapshot(
+        self, param_id: str, *, at: str, kh: float | None,
+        dose_mL: float | None,
+    ) -> None:
+        """Append a daily snapshot. Caps history at 90 entries (rolling)."""
+        blob = self._advisor_blob(param_id)
+        blob["snapshots"].append({"at": at, "kh": kh, "dose_mL": dose_mL})
+        # Keep ~3 months — the algorithm only looks at `window_days`
+        # but extra history is cheap and useful for diagnostics.
+        if len(blob["snapshots"]) > 90:
+            blob["snapshots"] = blob["snapshots"][-90:]
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+
+    async def async_record_advisor_acknowledgment(
+        self, param_id: str, *, applied_value_mL: float, prev_value_mL: float,
+    ) -> None:
+        blob = self._advisor_blob(param_id)
+        blob["acknowledgments"].append({
+            "at": _now_iso(),
+            "applied_value_mL": float(applied_value_mL),
+            "prev_value_mL": float(prev_value_mL),
+        })
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+
+    async def async_record_advisor_dismissal(
+        self, param_id: str, *, suggested_value_mL: float,
+    ) -> None:
+        blob = self._advisor_blob(param_id)
+        blob["dismissals"].append({
+            "at": _now_iso(),
+            "suggested_value_mL": float(suggested_value_mL),
+        })
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+
+    async def async_record_advisor_demand_change(
+        self, param_id: str, *, reason: str,
+        expected_direction: str = "unknown",
+        magnitude_hint_pct: float | None = None,
+    ) -> None:
+        blob = self._advisor_blob(param_id)
+        blob["demand_changes"].append({
+            "at": _now_iso(),
+            "reason": reason,
+            "expected_direction": expected_direction,
+            "magnitude_hint_pct": magnitude_hint_pct,
+        })
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+
+    async def async_record_water_change(
+        self, param_id: str, *, percent: float,
+        salt_mix_kh: float | None = None, notes: str | None = None,
+    ) -> None:
+        blob = self._advisor_blob(param_id)
+        blob["water_changes"].append({
+            "at": _now_iso(),
+            "percent": float(percent),
+            "salt_mix_kh": float(salt_mix_kh) if salt_mix_kh is not None else None,
+            "notes": notes,
+        })
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+
+    # ------------------------------------------------------------------
+    # Supplement profiles (user-managed; merge with alk_advisor builtins)
+    # ------------------------------------------------------------------
+    @property
+    def supplement_profiles(self) -> list[dict[str, Any]]:
+        return self._data.setdefault("supplement_profiles", [])
+
+    async def async_add_supplement_profile(
+        self, *, label: str, eff_dkh_per_mL_per_100L: float,
+        label_patterns: list[str] | None = None, notes: str | None = None,
+    ) -> dict[str, Any]:
+        # Lazy import keeps coordinator import-time light and avoids a
+        # cycle (alk_advisor imports coordinator types).
+        from .alk_advisor import BUILTIN_PROFILES
+        existing = self.supplement_profiles
+        taken = set(BUILTIN_PROFILES) | {p["id"] for p in existing}
+        entry = {
+            "id": _unique_slug(label, taken),
+            "label": label,
+            "eff_dkh_per_mL_per_100L": float(eff_dkh_per_mL_per_100L),
+            "label_patterns": [p.lower() for p in (label_patterns or [])],
+            "created_at": _now_iso(),
+            "notes": notes,
+        }
+        existing.append(entry)
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, "kh")
+        return entry
+
+    async def async_remove_supplement_profile(self, profile_id: str) -> None:
+        existing = self.supplement_profiles
+        for i, p in enumerate(existing):
+            if p["id"] == profile_id:
+                del existing[i]
+                await self.async_save()
+                async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, "kh")
+                return
+        raise ValueError(f"Supplement profile not found: {profile_id}")

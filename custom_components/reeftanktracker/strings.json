@@ -12,9 +12,21 @@
   },
   "options": {
     "step": {
-      "init": {
+      "menu": {
+        "title": "Reef Tank Tracker — Options",
+        "description": "Pick a section to edit.",
+        "menu_options": {
+          "sources": "Auto-source sensors",
+          "advisor": "Alk dosing advisor"
+        }
+      },
+      "sources": {
         "title": "Auto-source sensors",
         "description": "For each parameter, optionally pick a sensor whose value will be used as the 'latest' fallback when no manual reading is fresh. Defaults are pre-filled where we know about them (e.g. KH Keeper, ATO probe). Leave a row empty for manual / ICP-only parameters."
+      },
+      "advisor": {
+        "title": "Alk dosing advisor",
+        "description": "Configure the alkalinity dosing recommendation engine. Leave 'Enable advisor' off until your KH source is calibrated. The advisor reads daily snapshots of KH + the sum of programmed dose across the selected alk heads, then suggests a daily-dose change weekly. v1 is recommendation-only — never writes to your doser."
       }
     }
   },

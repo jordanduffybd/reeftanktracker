@@ -81,8 +81,13 @@ SERVICE_ADD_INVENTORY = "add_inventory"
 SERVICE_REMOVE_INVENTORY = "remove_inventory"
 SERVICE_SET_HABITAT = "set_habitat"
 SERVICE_IMPORT_ICP = "import_icp"
+SERVICE_ADD_SUPPLEMENT_PROFILE = "add_supplement_profile"
+SERVICE_REMOVE_SUPPLEMENT_PROFILE = "remove_supplement_profile"
+SERVICE_LIST_SUPPLEMENT_PROFILES = "list_supplement_profiles"
+SERVICE_LOG_WATER_CHANGE = "log_water_change"
 
 # Signal names for state-change dispatching
 SIGNAL_READING_RECORDED = f"{DOMAIN}_reading_recorded"
 SIGNAL_INVENTORY_CHANGED = f"{DOMAIN}_inventory_changed"
 SIGNAL_HABITAT_CHANGED = f"{DOMAIN}_habitat_changed"
+SIGNAL_ADVISOR_UPDATED = f"{DOMAIN}_advisor_updated"

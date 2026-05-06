@@ -29,12 +29,15 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import alk_advisor
+from .advisor import Recommendation
 from .const import (
     DEVICE_ID,
     DEVICE_MANUFACTURER,
     DEVICE_MODEL,
     DEVICE_NAME,
     DOMAIN,
+    SIGNAL_ADVISOR_UPDATED,
     SIGNAL_HABITAT_CHANGED,
     SIGNAL_READING_RECORDED,
 )
@@ -75,6 +78,7 @@ async def async_setup_entry(
     entities.extend([
         TankHabitatSensor(coordinator),
         TankProblemSensor(coordinator),
+        AlkAdvisorSensor(coordinator),
     ])
 
     async_add_entities(entities)
@@ -318,3 +322,76 @@ def _round(value: float | None, precision: int | None) -> float | None:
     if precision is None:
         return value
     return round(value, precision)
+
+
+# ---------------------------------------------------------------------------
+# Alk advisor sensor — wraps the algorithm in alk_advisor.compute_for_entity
+# ---------------------------------------------------------------------------
+class AlkAdvisorSensor(SensorEntity):
+    """`sensor.reef_tank_alk_advisor_recommendation` — suggested alk daily
+    dose in mL.
+
+    State is `None` (unavailable) when the advisor is disabled or there
+    isn't enough data; show-your-work data lives in attributes.
+    Recomputes on advisor-update signals (snapshot recorded, ack,
+    dismiss, demand-change) — not on every upstream state change.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_info = _device_info()
+    _attr_native_unit_of_measurement = "mL"
+    _attr_icon = "mdi:test-tube"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_unique_id = "reef_alk_advisor_recommendation"
+    _attr_name = "Alk Advisor Recommendation"
+
+    def __init__(self, coordinator: ReefDataCoordinator) -> None:
+        self._coordinator = coordinator
+        self._last: Recommendation | None = None
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_ADVISOR_UPDATED, self._handle_update
+            )
+        )
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_update(self, _param_id: str | None = None) -> None:
+        self.async_write_ha_state()
+
+    def _compute(self) -> Recommendation | None:
+        rec = alk_advisor.compute_for_entity(self.hass, self._coordinator)
+        self._last = rec
+        return rec
+
+    @property
+    def native_value(self) -> float | None:
+        rec = self._compute()
+        return rec.state if rec is not None else None
+
+    @property
+    def available(self) -> bool:
+        # The sensor is registered always; availability mirrors the
+        # advisor toggle so HA shows it as unavailable until enabled.
+        cfg = self._coordinator.get_advisor_config()
+        return bool(cfg.get(alk_advisor.OPT_ADVISOR_ENABLED))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        rec = self._last or self._compute()
+        cfg = self._coordinator.get_advisor_config()
+        if rec is None:
+            return {
+                "advisor_enabled": False,
+                "reason": "Advisor disabled in Options.",
+            }
+        attrs = rec.as_attributes()
+        attrs["advisor_enabled"] = True
+        attrs["alk_head_entity_ids"] = list(
+            cfg.get(alk_advisor.OPT_ALK_HEADS) or []
+        )
+        attrs["kh_source_entity"] = cfg.get(alk_advisor.OPT_KH_SOURCE) or ""
+        return attrs

@@ -111,9 +111,9 @@ async def test_state_change_below_significance_is_skipped(monkeypatch):
     listener = AutoSourceListener(hass, coord)
     await listener.async_start()
 
-    # +0.02 dKH after 6 minutes — over the interval but below the step (0.05)
+    # +0.005 dKH after 6 minutes — over the interval but below the step (0.01)
     later = _state(
-        "sensor.kh_keeper_kh", "8.32", when=t0 + timedelta(minutes=6),
+        "sensor.kh_keeper_kh", "8.305", when=t0 + timedelta(minutes=6),
     )
     handler_holder["cb"](Event({"new_state": later}))
     await _drain()

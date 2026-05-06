@@ -386,6 +386,7 @@ def build_dashboard_config(hass: HomeAssistant | None = None) -> dict[str, Any]:
         "views": [
             _build_test_session_view(uid_map),
             _build_overview_view(uid_map),
+            _build_advisor_view(uid_map),
             _build_diagnostics_view(uid_map),
         ],
     }
@@ -516,6 +517,189 @@ def _build_overview_view(uid_map: dict[str, str]) -> dict[str, Any]:
                      "icon": "mdi:calendar-clock"},
                     *cards_days,
                 ],
+            },
+        ],
+    }
+
+
+def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
+    """Alk dosing advisor — recommendation, controls, calculation details."""
+    advisor_eid = _eid(uid_map, "reef_alk_advisor_recommendation")
+
+    # Top tile: the headline recommendation
+    headline_card = {
+        "type": "tile",
+        "entity": advisor_eid,
+        "name": "Suggested daily dose",
+        "icon": "mdi:test-tube",
+        "vertical": True,
+        "state_content": ["state", "last-changed"],
+    }
+
+    # Show-your-work attributes — quick reference
+    attributes_card = {
+        "type": "entities",
+        "title": "Show your work",
+        "show_header_toggle": False,
+        "entities": [
+            {"type": "attribute", "entity": advisor_eid, "name": "KH median",
+             "attribute": "kh_median"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Target band low",
+             "attribute": "target_min"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Target band high",
+             "attribute": "target_max"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Current dose (mL/day)",
+             "attribute": "current_dose_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Suggested dose (mL/day)",
+             "attribute": "suggested_dose_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Change (mL)",
+             "attribute": "change_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Change (%)",
+             "attribute": "change_pct"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Confidence",
+             "attribute": "confidence"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Reason",
+             "attribute": "reason"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Cooldown until",
+             "attribute": "cooldown_until"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Calibration warning",
+             "attribute": "calibration_warning"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Last demand change", "attribute": "last_demand_change_at"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Days since demand change",
+             "attribute": "days_since_demand_change"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Observed slope (dKH/day)",
+             "attribute": "observed_slope_dkh_per_day"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec efficiency (dKH/mL)",
+             "attribute": "spec_efficiency_dkh_per_mL"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Supplement (auto-detected)",
+             "attribute": "detected_supplement_label"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec efficiency source",
+             "attribute": "spec_efficiency_source"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical potency (dKH/mL)",
+             "attribute": "empirical_potency_dkh_per_mL"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical / spec ratio",
+             "attribute": "empirical_to_spec_ratio"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical basis",
+             "attribute": "empirical_potency_basis"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec drift warning",
+             "attribute": "spec_drift_warning"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Last water change",
+             "attribute": "last_water_change_at"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Days since water change",
+             "attribute": "days_since_water_change"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Samples excluded (WC settling)",
+             "attribute": "samples_excluded_for_wc"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Samples used", "attribute": "samples_used"},
+        ],
+    }
+
+    # Action buttons — call services. We don't pre-fill the values; the
+    # user enters their own in the developer-tools-style call dialog
+    # the button selector opens.
+    actions_card = {
+        "type": "entities",
+        "title": "Actions",
+        "show_header_toggle": False,
+        "entities": [
+            {
+                "type": "call-service",
+                "name": "Acknowledge — I applied this in Reefbeat",
+                "icon": "mdi:check-circle",
+                "action_name": "Acknowledge",
+                "service": "reeftanktracker.acknowledge_alk_recommendation",
+                "service_data": {},
+            },
+            {
+                "type": "call-service",
+                "name": "Dismiss — ignore this suggestion",
+                "icon": "mdi:close-circle",
+                "action_name": "Dismiss",
+                "service": "reeftanktracker.dismiss_alk_recommendation",
+                "service_data": {},
+            },
+            {
+                "type": "call-service",
+                "name": "Log demand change — corals added/removed",
+                "icon": "mdi:swap-vertical",
+                "action_name": "Log",
+                "service": "reeftanktracker.log_demand_change",
+                "service_data": {"reason": ""},
+            },
+            {
+                "type": "call-service",
+                "name": "Log water change",
+                "icon": "mdi:water-sync",
+                "action_name": "Log",
+                "service": "reeftanktracker.log_water_change",
+                "service_data": {"percent": 10.0},
+            },
+        ],
+    }
+
+    help_card = {
+        "type": "markdown",
+        "content": (
+            "**Custom supplements:** add via Developer Tools → "
+            "`reeftanktracker.add_supplement_profile`. List with "
+            "`reeftanktracker.list_supplement_profiles` (logs at WARNING).\n\n"
+            "**Water changes:** log via the button above or "
+            "`reeftanktracker.log_water_change`. Snapshots within "
+            "the settling window after a water change are excluded "
+            "from the slope/median calculation; the rolling window "
+            "is otherwise unchanged.\n\n"
+            "**Observed vs spec:** when you acknowledge a dose change, "
+            "the advisor estimates the supplement's actual potency from "
+            "before/after slope. If it drifts more than the configured "
+            "threshold from spec, you'll see `spec_drift_warning: true` "
+            "and a note in the reason text — consider switching to a "
+            "Custom profile with the observed value if it persists."
+        ),
+    }
+
+    return {
+        "title": "Alk Advisor",
+        "path": "alk-advisor",
+        "icon": "mdi:test-tube",
+        "type": "sections",
+        "max_columns": 3,
+        "sections": [
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Alkalinity dosing advisor",
+                     "icon": "mdi:test-tube"},
+                    headline_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [attributes_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [actions_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [help_card],
             },
         ],
     }

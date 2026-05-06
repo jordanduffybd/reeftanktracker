@@ -234,3 +234,211 @@ regenerate_dashboard:
     Force a fresh build of the auto-installed Reef Tank dashboard at
     /reef-tank-tracker. Clears the "user-removed" flag, so calling this
     after manually deleting the dashboard will bring it back.
+
+acknowledge_alk_recommendation:
+  name: Acknowledge Alk Recommendation
+  description: >
+    Record that you applied the advisor's current alk dose suggestion
+    in your Reefbeat doser. Starts the cooldown so the advisor won't
+    re-suggest until enough time passes for the change to settle.
+  fields:
+    applied_value_mL:
+      name: Applied dose (mL/day)
+      description: The new daily dose you set in Reefbeat.
+      required: true
+      example: 2.7
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+    prev_value_mL:
+      name: Previous dose (mL/day)
+      description: >
+        Optional — the dose you replaced. If omitted, inferred from the
+        last persisted snapshot.
+      example: 3.0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+
+dismiss_alk_recommendation:
+  name: Dismiss Alk Recommendation
+  description: >
+    Tell the advisor you've seen the current suggestion but won't apply
+    it. Starts a shorter cooldown than acknowledge so it doesn't re-fire
+    on identical data.
+  fields:
+    suggested_value_mL:
+      name: Dismissed value (mL/day)
+      description: Optional — the value you're dismissing, for audit.
+      example: 2.7
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+
+log_demand_change:
+  name: Log Demand Change
+  description: >
+    Record that the tank's nutrient demand changed (added corals, fish,
+    livestock removed, etc.). The advisor truncates its rolling window
+    from this point and enters learning mode for a few days before
+    issuing a new recommendation, so it doesn't extrapolate from
+    pre-event data.
+  fields:
+    parameter:
+      name: Parameter
+      description: Parameter id (default kh).
+      default: kh
+      selector:
+        select:
+          options:
+            - kh
+    reason:
+      name: Reason
+      description: Free-text — what changed.
+      required: true
+      example: "added 3 SPS frags"
+      selector:
+        text:
+    expected_direction:
+      name: Expected direction
+      description: Whether you expect demand to rise, fall, or are unsure.
+      default: unknown
+      selector:
+        select:
+          options:
+            - increase
+            - decrease
+            - unknown
+    magnitude_hint_pct:
+      name: Magnitude hint (%)
+      description: >
+        Optional — your guess of the demand change as a percentage.
+        Stored as an attribute; not used in the math.
+      example: 10
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+          step: 1
+
+add_supplement_profile:
+  name: Add Supplement Profile
+  description: >
+    Register a custom alkalinity supplement so it appears in the Alk
+    Advisor's Supplement profile dropdown and is matched by auto-detect.
+    Vendor-published efficiency is dKH per mL per 100 L (Red Sea
+    Foundation B = 0.1; check your supplement's label).
+  fields:
+    label:
+      name: Label
+      description: Display name shown in the Options dropdown.
+      required: true
+      example: "Brightwell Alkalin8.3"
+      selector:
+        text:
+    eff_dkh_per_mL_per_100L:
+      name: Efficiency (dKH per mL per 100 L)
+      description: >
+        Vendor-published potency. e.g. 0.1 means "1 mL per 100 L raises
+        alkalinity by 0.1 dKH". For Foundation B that's 0.1.
+      required: true
+      example: 0.083
+      selector:
+        number:
+          mode: box
+          min: 0.001
+          max: 5.0
+          step: 0.001
+    label_patterns:
+      name: Label patterns (for auto-detect)
+      description: >
+        Optional list of lowercase substrings to match against the
+        doser's `*_supplement` sensor state. e.g. ["alkalin8"]. Leave
+        empty if you'll always pick this profile manually.
+      example: '["alkalin8", "alkalin 8"]'
+      selector:
+        text:
+          multiple: true
+    notes:
+      name: Notes
+      description: Free-form. Vendor URL, lot number, mix recipe, etc.
+      selector:
+        text:
+          multiline: true
+
+remove_supplement_profile:
+  name: Remove Supplement Profile
+  description: >
+    Delete a previously-added supplement profile by id. Built-in
+    profiles cannot be removed. Get current ids via
+    `reeftanktracker.list_supplement_profiles`.
+  fields:
+    id:
+      name: Profile ID
+      description: The slug-style id, e.g. brightwell_alkalin8_3.
+      required: true
+      example: brightwell_alkalin8_3
+      selector:
+        text:
+
+list_supplement_profiles:
+  name: List Supplement Profiles
+  description: >
+    Logs the merged supplement profile registry (builtins + your
+    additions) at WARNING. Use this to find a profile id before calling
+    remove_supplement_profile. Output appears in the HA log.
+
+log_water_change:
+  name: Log Water Change
+  description: >
+    Record a water change so the alk advisor doesn't interpret the
+    sudden KH shift as a trend. Snapshots within the configured
+    settling window after this event are excluded from slope/median
+    calculations; the rolling window is otherwise unchanged.
+  fields:
+    parameter:
+      name: Parameter
+      default: kh
+      selector:
+        select:
+          options:
+            - kh
+    percent:
+      name: Percent volume changed
+      description: e.g. 10 for a 10% water change.
+      required: true
+      example: 10
+      selector:
+        number:
+          mode: box
+          min: 0.1
+          max: 100
+          step: 0.5
+    salt_mix_kh:
+      name: Salt mix KH (dKH)
+      description: >
+        Optional — KH of the new water. Stored as a diagnostic; not
+        used in v1 math.
+      example: 8.0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 20
+          step: 0.05
+    notes:
+      name: Notes
+      description: Free-form (brand, batch, etc.).
+      selector:
+        text:
+          multiline: true

@@ -53,9 +53,9 @@ INPUT_PARAMETERS: list[ParameterDef] = [
     {
         "id": "kh", "name": "KH", "unit": "dKH", "icon": "mdi:test-tube",
         "group": "macro",
-        "min": 0, "max": 20, "step": 0.05, "precision": 2,
+        "min": 0, "max": 20, "step": 0.01, "precision": 2,
         "auto_source": "sensor.kh_keeper_kh",
-        "default_target_min": 7.5, "default_target_max": 9.0,
+        "default_target_min": 8.5, "default_target_max": 8.9,
         "common_methods": ["Hanna ULR", "Salifert", "API"],
         "test_cadence_days": 3,
         "input_only": True,
