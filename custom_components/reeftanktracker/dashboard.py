@@ -57,68 +57,137 @@ async def install_dashboard_if_missing(
 ) -> bool:
     """Create the Reef Tank dashboard if it doesn't already exist.
 
-    Returns True if a dashboard was created or its content rewritten.
+    Tries (in order) three strategies for registering the dashboard:
+      1. `hass.data["lovelace"].dashboards_collection` — exists in some versions
+      2. Importing `DashboardsCollection` directly and bootstrapping it —
+         works on HA 2024+ where the collection isn't exposed via hass.data
+      3. Direct file writes to `.storage/lovelace_dashboards` — last resort,
+         requires HA restart to be picked up
+
+    Step 2 covers the 2024+ era cleanly. Step 1 covers older versions.
+    Step 3 is the safety net if HA changes the API again — at least the
+    dashboard files are written and a restart fixes it.
     """
     if coordinator.is_dashboard_user_removed():
         _LOGGER.debug("Dashboard skipped — user previously removed it")
         return False
 
-    # ─────────────────────────────────────────────────────────────────
-    # Step 1: register the dashboard in HA's in-memory dashboards
-    # collection (so it appears in the sidebar without restart).
-    # ─────────────────────────────────────────────────────────────────
+    config = build_dashboard_config()
+    new_dashboard = {
+        "url_path": DASHBOARD_URL_PATH,
+        "mode": "storage",
+        "title": "Reef Tank",
+        "icon": "mdi:fishbowl",
+        "show_in_sidebar": True,
+        "require_admin": False,
+    }
+
+    # ────── Strategy 1: collection on hass.data["lovelace"]
+    coll = _try_get_dashboards_collection(hass)
+    if coll is not None:
+        try:
+            existing = [
+                d for d in coll.async_items()
+                if d.get("url_path") == DASHBOARD_URL_PATH
+            ]
+            if not existing:
+                await coll.async_create_item(new_dashboard)
+                _LOGGER.info(
+                    "Registered Reef Tank dashboard via in-memory collection"
+                )
+            await _write_dashboard_content(hass, config)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "In-memory collection registration failed (%s); "
+                "falling back to bootstrap strategy.", exc,
+            )
+
+    # ────── Strategy 2: bootstrap a DashboardsCollection from disk
+    try:
+        from homeassistant.components.lovelace.dashboard import (  # noqa: PLC0415
+            DashboardsCollection,
+        )
+    except ImportError:
+        _LOGGER.warning(
+            "DashboardsCollection import failed; falling back to direct file write."
+        )
+    else:
+        try:
+            dc = DashboardsCollection(hass)
+            await dc.async_load()
+            existing = [
+                d for d in dc.async_items()
+                if d.get("url_path") == DASHBOARD_URL_PATH
+            ]
+            if not existing:
+                await dc.async_create_item(new_dashboard)
+                _LOGGER.info(
+                    "Registered Reef Tank dashboard via bootstrapped collection — "
+                    "RESTART Home Assistant to see it in the sidebar."
+                )
+            await _write_dashboard_content(hass, config)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "Bootstrapped collection failed (%s); falling back to direct file write.",
+                exc,
+            )
+
+    # ────── Strategy 3: write the storage files directly. Requires restart.
+    try:
+        registry_store = Store(hass, 1, "lovelace_dashboards")
+        registry = (await registry_store.async_load()) or {"items": []}
+        items = registry.get("items", [])
+        if not any(d.get("url_path") == DASHBOARD_URL_PATH for d in items):
+            items.append({"id": DASHBOARD_ID, **new_dashboard})
+            registry["items"] = items
+            await registry_store.async_save(registry)
+        await _write_dashboard_content(hass, config)
+        _LOGGER.warning(
+            "Wrote Reef Tank dashboard to .storage directly (HA Lovelace "
+            "API not accessible). RESTART Home Assistant to see it in the sidebar."
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("All dashboard install strategies failed")
+        return False
+
+
+def _try_get_dashboards_collection(hass: HomeAssistant) -> Any:
+    """Probe hass.data for a dashboards_collection across HA versions."""
     lovelace_data = hass.data.get("lovelace")
     if not lovelace_data:
-        _LOGGER.warning(
-            "Lovelace integration not loaded yet — cannot auto-install "
-            "dashboard. Call reeftanktracker.regenerate_dashboard later."
-        )
-        return False
+        return None
+    # LovelaceData dataclass attribute (older HA)
+    coll = getattr(lovelace_data, "dashboards_collection", None)
+    if coll is not None:
+        return coll
+    # Dict-shaped (some HA versions)
+    if isinstance(lovelace_data, dict):
+        coll = lovelace_data.get("dashboards_collection")
+        if coll is not None:
+            return coll
+    # Some versions stash it under a different key
+    for k in ("dashboards", "dashboard_collection"):
+        v = (getattr(lovelace_data, k, None)
+             if not isinstance(lovelace_data, dict)
+             else lovelace_data.get(k))
+        # The DashboardsCollection class has async_create_item;
+        # the dashboards dict (LovelaceConfig instances) does not.
+        if v is not None and hasattr(v, "async_create_item"):
+            return v
+    return None
 
-    # `lovelace_data` may be a LovelaceData dataclass or a dict
-    # depending on HA version. Handle both shapes.
-    dashboards_collection = (
-        getattr(lovelace_data, "dashboards_collection", None)
-        or (lovelace_data.get("dashboards_collection")
-            if isinstance(lovelace_data, dict) else None)
-    )
-    if dashboards_collection is None:
-        _LOGGER.warning(
-            "Could not find lovelace dashboards_collection on hass.data; "
-            "skipping auto-install (HA Lovelace API shape changed?)."
-        )
-        return False
 
-    # Check if already registered
-    existing = [
-        d for d in dashboards_collection.async_items()
-        if d.get("url_path") == DASHBOARD_URL_PATH
-    ]
-    if not existing:
-        try:
-            await dashboards_collection.async_create_item({
-                "url_path": DASHBOARD_URL_PATH,
-                "mode": "storage",
-                "title": "Reef Tank",
-                "icon": "mdi:fishbowl",
-                "show_in_sidebar": True,
-                "require_admin": False,
-            })
-            _LOGGER.info("Registered Reef Tank dashboard at /%s", DASHBOARD_URL_PATH)
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.error("Failed to register dashboard: %s", exc, exc_info=True)
-            return False
-
-    # ─────────────────────────────────────────────────────────────────
-    # Step 2: write the dashboard's content via Store.
-    # The lovelace integration reads `lovelace.<id>` from .storage on
-    # demand when the dashboard is opened, so writing here is enough.
-    # ─────────────────────────────────────────────────────────────────
+async def _write_dashboard_content(hass: HomeAssistant, config: dict[str, Any]) -> None:
+    """Write the dashboard's view YAML to .storage/lovelace.<id>."""
     dashboard_store = Store(hass, 1, DASHBOARD_STORE_KEY)
-    config = build_dashboard_config()
     await dashboard_store.async_save({"config": config})
-    _LOGGER.info("Wrote Reef Tank dashboard config (%d views)", len(config["views"]))
-    return True
+    _LOGGER.info(
+        "Wrote Reef Tank dashboard config (%d views) to .storage/%s",
+        len(config["views"]), DASHBOARD_STORE_KEY,
+    )
 
 
 async def regenerate_dashboard(
