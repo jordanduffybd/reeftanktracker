@@ -9,12 +9,13 @@ homeassistant:
   unit_system: metric
   time_zone: Australia/Brisbane
 
-# Local broker. The kh-keeper-bridge is NOT run in dev (it would fight
-# with prod for control of the physical KH Keeper device). The mirror
-# script populates `sensor.kh_keeper_*` directly via REST instead.
-mqtt:
-  broker: mosquitto
-  port: 1883
+# Local Mosquitto broker is reachable on `mosquitto:1883` from inside the
+# docker-compose network. Modern HA configures the MQTT broker via the
+# UI (Settings → Devices & Services → Add Integration → MQTT), not via
+# YAML. Add MQTT here only if you ever want to test MQTT-driven
+# integrations in dev — the kh-keeper-bridge is NOT run in dev (it
+# would fight with prod for control of the physical KH Keeper device).
+# The mirror script populates `sensor.kh_keeper_*` via REST instead.
 
 logger:
   default: info

@@ -2,9 +2,15 @@
 
 Local Home Assistant dev stack for testing the `reeftanktracker`
 integration **before** installing it on prod. The integration source is
-symlinked from `dev/config/custom_components/reeftanktracker` to the
-real `custom_components/reeftanktracker/` — edit the integration in
-place, restart the dev HA container, see changes immediately.
+bind-mounted from the repo's `custom_components/reeftanktracker/` into
+the container at `/config/custom_components/reeftanktracker` — edit
+the integration in place, restart the dev HA container, see changes
+immediately. No HACS, no release, no public-repo reference.
+
+HA's state (`.storage`, recorder db, logs) lives in a Docker-managed
+named volume (`ha_config`). To inspect: `docker compose exec
+homeassistant ls /config/.storage`. To reset everything (re-onboard
+fresh): `docker compose down -v` (the `-v` removes the named volume).
 
 A small mirror service streams selected entity states from prod's HA to
 dev's HA via REST so the dev environment looks realistic without
@@ -95,6 +101,33 @@ rm -rf config/.storage config/.cloud config/home-assistant_v2.db*
 echo MIRROR_ENABLED=false >> .env
 docker compose up -d mirror
 ```
+
+## Seeding 7 days of snapshot history from prod
+
+The advisor needs at least `min_samples` daily snapshots before it
+will produce a recommendation. The snapshotter only fires once a day
+at 23:55 local — too slow for dev iteration. Run the seed script to
+backfill 7 days from prod's recorder history:
+
+```bash
+cd dev
+set -a; source .env; set +a              # export HA_PROD_TOKEN, HA_DEV_TOKEN
+HA_DEV_URL=http://localhost:8123 \
+  ../.venv-tools/bin/python tools/seed_from_prod.py
+```
+
+The script:
+- Fetches `sensor.kh_keeper_kh` history from prod for the past 7 days
+  (median of each day's titrations becomes that day's KH).
+- Fetches `*_daily_dose` history for each configured alk head (value at
+  end-of-day, summed across heads).
+- Falls back to `SEED_DEFAULTS` (kh=9.08, dose_mL=3.0) for any day prod
+  has no data.
+- POSTs each snapshot to dev's `reeftanktracker.capture_snapshot_now`
+  service.
+
+After it runs, refresh the Alk Advisor dashboard. With `Enable advisor`
+on in Options, the recommendation should populate immediately.
 
 ## Adding more entities to the mirror
 
