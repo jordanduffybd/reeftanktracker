@@ -1,14 +1,14 @@
 {
   "domain": "reeftanktracker",
   "name": "Reef Tank Tracker",
-  "version": "0.1.12",
-  "documentation": "https://github.com/jordanduffybd/reeftanktracker",
-  "issue_tracker": "https://github.com/jordanduffybd/reeftanktracker/issues",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@jordanduffybd"],
   "config_flow": true,
-  "iot_class": "local_push",
-  "integration_type": "service",
   "dependencies": [],
-  "after_dependencies": ["recorder"],
-  "requirements": []
+  "documentation": "https://github.com/jordanduffybd/reeftanktracker",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jordanduffybd/reeftanktracker/issues",
+  "requirements": [],
+  "version": "0.1.12"
 }
