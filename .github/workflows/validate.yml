@@ -24,3 +24,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # Drop "brands" once the integration is registered at
+          # https://github.com/home-assistant/brands (separate PR).
+          ignore: brands
