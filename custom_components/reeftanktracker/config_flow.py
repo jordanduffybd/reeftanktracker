@@ -74,24 +74,36 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         if user_input is not None:
-            # Strip empty strings so we don't clutter the options dict.
+            # Strip empty / missing entries so we don't clutter the options dict.
             cleaned = {k: v for k, v in user_input.items() if v}
             return self.async_create_entry(title="", data=cleaned)
 
         # Build a schema row per input parameter.
-        # Default: existing option, or the hardcoded parameter default,
-        # or empty if neither.
+        #
+        # `vol.Optional(key)` (no default) is important: EntitySelector's
+        # validator rejects empty strings ("Entity is neither a valid
+        # entity ID nor a valid UUID"), so we can't pass "" as a default.
+        # Current values are surfaced via add_suggested_values_to_schema,
+        # which only pre-fills the input box without injecting a value
+        # that voluptuous has to validate.
         schema_dict: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
         for p in INPUT_PARAMETERS:
             key = auto_source_key(p["id"])
-            current = self._entry.options.get(key, p.get("auto_source") or "")
-            schema_dict[vol.Optional(key, default=current)] = EntitySelector(
+            current = self._entry.options.get(key, p.get("auto_source"))
+            schema_dict[vol.Optional(key)] = EntitySelector(
                 EntitySelectorConfig(domain=["sensor", "input_number"])
             )
+            if current:
+                suggested[key] = current
+
+        schema = self.add_suggested_values_to_schema(
+            vol.Schema(schema_dict), suggested
+        )
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(schema_dict),
+            data_schema=schema,
             description_placeholders={
                 "param_count": str(len(INPUT_PARAMETERS)),
             },

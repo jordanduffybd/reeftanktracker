@@ -75,6 +75,8 @@ def _install_ha_stubs() -> None:
         def __init_subclass__(cls, **kw): pass
         def async_create_entry(self, **kw): return kw
         def async_show_form(self, **kw): return kw
+        def add_suggested_values_to_schema(self, schema, suggested):
+            return schema
     config_entries.ConfigEntry = ConfigEntry
     config_entries.ConfigFlow = ConfigFlow
     config_entries.OptionsFlow = OptionsFlow

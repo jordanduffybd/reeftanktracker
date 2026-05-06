@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12
+
+- **Fix Options flow validation error.** Saving the auto-source-sensor configuration with any unset parameter raised "Entity is neither a valid entity ID nor a valid UUID" because EntitySelector rejects `""` as a default value. Now uses `add_suggested_values_to_schema` to pre-fill current/default selections without putting voluptuous in a position to validate empty strings. Unset parameters can be left blank and the form will save cleanly.
+
 ## 0.1.11
 
 - **Fix `backfill_statistics` silent no-op.** Was writing to `sensor.reef_tank_<param>_latest` regardless of the actual entity ID in your install. On installs that started on v0.1.0 (entities are `sensor.<param>_latest`) every write was discarded by the recorder because the statistic_id didn't match a registered entity, and there were no logs to explain why. Now uses entity-registry lookup by `unique_id` (same approach the dashboard generator uses), and logs at WARNING level: counts of points written per parameter, skipped parameters with no registered entity, and a final total. Run the service again after upgrading.
