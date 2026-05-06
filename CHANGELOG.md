@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13
+
+- **Declare `recorder` as `after_dependencies`.** The coordinator imports `recorder.statistics` lazily (try/except) and falls back gracefully when it's not loaded, but declaring the dependency means HA always loads recorder *before* this integration. Removes a startup race where the first reading after HA boot could miss its statistics write if recorder wasn't ready yet.
+- **CI** — pytest (Python 3.11 + 3.12), ruff, hassfest, and HACS validation now run on every push and PR. Future regressions in manifest, schema, or config-flow surface in CI before release. See `.github/workflows/`.
+- **Repo hygiene.** Added `CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)` per HA convention (silences hassfest warning, no user-visible effect). Removed dead imports flagged by ruff. Sorted `manifest.json` keys per hassfest. Cleaned up `hacs.json` (dropped `domains` / `iot_class` — those keys belong in `manifest.json`, not the HACS manifest).
+
 ## 0.1.12
 
 - **Fix Options flow validation error.** Saving the auto-source-sensor configuration with any unset parameter raised "Entity is neither a valid entity ID nor a valid UUID" because EntitySelector rejects `""` as a default value. Now uses `add_suggested_values_to_schema` to pre-fill current/default selections without putting voluptuous in a position to validate empty strings. Unset parameters can be left blank and the form will save cleanly.
