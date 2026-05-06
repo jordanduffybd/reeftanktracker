@@ -59,12 +59,24 @@ class ReefEntryNumber(NumberEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_mode = NumberMode.BOX
+    # Always available, even when no reading has been entered yet —
+    # otherwise HA marks the entity unavailable and disables the input
+    # in the entity-detail modal, which makes it impossible to set the
+    # very first value from there. We're tracking "do we have data?"
+    # via native_value=None instead.
+    _attr_available = True
     _attr_device_info = DeviceInfo(
         identifiers={(DOMAIN, DEVICE_ID)},
         name=DEVICE_NAME,
         manufacturer=DEVICE_MANUFACTURER,
         model=DEVICE_MODEL,
     )
+
+    # Override available as a property too — some HA versions check the
+    # property before the class attribute when rendering.
+    @property
+    def available(self) -> bool:
+        return True
 
     def __init__(self, coordinator: ReefDataCoordinator, param: ParameterDef) -> None:
         self._coordinator = coordinator

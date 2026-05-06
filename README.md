@@ -26,6 +26,7 @@ A Home Assistant custom integration for tracking reef aquarium water parameters,
 - **[docs/RELEASING.md](docs/RELEASING.md)** — how to cut a release HACS will actually pick up (TL;DR: GitHub Releases, not bare tags)
 - **[docs/DASHBOARD.md](docs/DASHBOARD.md)** — auto-install behaviour, regenerating, customising
 - **[docs/SERVICES.md](docs/SERVICES.md)** — every `reeftanktracker.*` service and its fields
+- **[docs/IMPORTING.md](docs/IMPORTING.md)** — bulk-import historical CSVs (Aquarium Log app + Triton ICP exports)
 - **[CHANGELOG.md](CHANGELOG.md)** — what changed per release
 - **[tests/README.md](tests/README.md)** — running the test suite
 
