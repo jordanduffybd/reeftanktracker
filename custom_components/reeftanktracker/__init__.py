@@ -9,7 +9,6 @@ async_setup_entry we:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import voluptuous as vol
 
@@ -31,11 +30,10 @@ from .const import (
     SOURCE_ICP,
     SOURCE_MANUAL,
 )
-from .config_flow import OPT_AUTO_SOURCE_PREFIX, auto_source_key
+from .config_flow import auto_source_key
 from .coordinator import ReefDataCoordinator
 from .dashboard import (
     diagnose_dashboard,
-    install_dashboard_if_missing,
     regenerate_dashboard,
     schedule_install,
 )

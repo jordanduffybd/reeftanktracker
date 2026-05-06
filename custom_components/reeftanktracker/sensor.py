@@ -24,7 +24,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -37,8 +37,9 @@ from .const import (
     DOMAIN,
     SIGNAL_HABITAT_CHANGED,
     SIGNAL_READING_RECORDED,
-    SOURCE_MANUAL,
 )
+from .coordinator import ReefDataCoordinator
+from .parameters import ALL_PARAMETERS, ParameterDef
 
 
 def _device_info() -> DeviceInfo:
@@ -50,8 +51,6 @@ def _device_info() -> DeviceInfo:
         manufacturer=DEVICE_MANUFACTURER,
         model=DEVICE_MODEL,
     )
-from .coordinator import ReefDataCoordinator
-from .parameters import ALL_PARAMETERS, ParameterDef
 
 _LOGGER = logging.getLogger(__name__)
 
