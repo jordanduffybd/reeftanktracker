@@ -22,6 +22,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,36 @@ _LOGGER = logging.getLogger(__name__)
 
 DEBUG_BUNDLE_DIR = "icpimport_debug"
 USER_AGENT = "reeftanktracker (+https://github.com/jordanduffybd/reeftanktracker)"
+
+# --- Triton showroom HTML structure (inspected 2026-05-06 against
+# https://www.triton-lab.de/en/showroom/icp-oes/229019) ---
+#
+# Each measured element is a <tr id="<symbol>"> block with five <td>
+# cells in order:
+#   0. periodic-table icon (skipped — same data as the row id)
+#   1. display name, e.g. "Calcium"
+#   2. analysis, e.g. "429.00 mg/l" or "0.055 mg/l" with a
+#      `class="elem-warn-red"` (or `-yellow`) when out of range
+#   3. setpoint, e.g. "415 - 520 mg/l" (range) or "35 PSU" (point)
+#   4. visual status bar (skipped — same data as the warning class)
+#
+# Sample date is NOT in the public showroom HTML; we accept it as an
+# optional service arg and default to "today" with a logged warning.
+# Test ID is the numeric URL segment (e.g. 229019).
+
+_ROW_RE = re.compile(
+    r'<tr id="(?P<sym>[A-Za-z0-9]+)">(?P<body>.*?)</tr>',
+    re.DOTALL,
+)
+_TD_RE = re.compile(
+    r'<td(?P<attrs>[^>]*)>(?P<content>.*?)</td>',
+    re.DOTALL,
+)
+_CLASS_RE = re.compile(r'class="([^"]*)"')
+_VALUE_UNIT_RE = re.compile(
+    r"^\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>\S.*?)?\s*$"
+)
+_TEST_ID_FROM_URL_RE = re.compile(r"/icp-oes/(\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -89,16 +120,14 @@ class ParserError(Exception):
 def parse_triton_showroom(html: str) -> ParsedReport:
     """Parse a Triton public showroom HTML page into a ParsedReport.
 
-    Phase 1: this is a stub. Returning here without raising would mean
-    we successfully recognised the page; raising means we couldn't.
-    Real selectors land once we have a sample URL from Jordan to inspect.
+    Returns a ParsedReport with `test_id` and `sample_date` left as
+    empty strings — the caller (`import_triton_url`) populates those
+    from the URL and service-call args. The parser only needs the HTML.
 
-    Why not implement speculatively: the page might be JS-rendered,
-    might be served as JSON-LD, might use class names that look stable
-    but aren't. Two minutes of reading the actual HTML beats two hours
-    of fixing wrong assumptions (CLAUDE.md rule #3).
+    Raises `ParserError` if the page doesn't look like a Triton report
+    or if zero element rows are found. The caller is responsible for
+    capturing the offending HTML in a debug bundle.
     """
-    # Quick sanity heuristic to avoid blowing up on entirely wrong pages.
     if not isinstance(html, str) or len(html) < 100:
         raise ParserError(
             "Triton page response is empty or impossibly short — "
@@ -109,10 +138,83 @@ def parse_triton_showroom(html: str) -> ParsedReport:
             "Page doesn't look like a Triton ICP report (no 'triton' "
             "or 'icp' marker in the HTML). Check the URL."
         )
-    raise ParserError(
-        "Phase 1 parser is a stub. The structure of Triton's public "
-        "showroom HTML hasn't been inspected yet — please share a real "
-        "showroom URL so the parser can be written against it."
+
+    elements: list[ParsedElement] = []
+    seen_symbols: set[str] = set()
+
+    for row in _ROW_RE.finditer(html):
+        sym = row.group("sym")
+        # The same element appears twice in the page (summary table +
+        # per-element detail section); keep only the first.
+        if sym in seen_symbols:
+            continue
+
+        body = row.group("body")
+        cells = list(_TD_RE.finditer(body))
+        if len(cells) < 4:
+            # The detail-section <h1>...</h1>... blocks have a few <td>s
+            # but in a different shape; only the summary-table rows
+            # have ≥ 4 cells in the order we expect.
+            continue
+
+        # Cell 1: display name (e.g. "Calcium")
+        name = unescape(cells[1].group("content")).strip() or None
+
+        # Cell 2: analysis with optional warning class
+        analysis_attrs = cells[2].group("attrs") or ""
+        analysis_text = unescape(cells[2].group("content")).strip()
+        m = _VALUE_UNIT_RE.match(analysis_text)
+        if not m:
+            # Some elements show no analysis (placeholder rows). Skip.
+            continue
+        try:
+            value = float(m.group("value"))
+        except (TypeError, ValueError):
+            continue
+        unit = (m.group("unit") or "").strip() or None
+
+        # The optional class attribute encodes the warning level:
+        #   elem-warn-red    — outside acceptable range
+        #   elem-warn-yellow — borderline
+        # Absence = OK / in range.
+        warning: str | None = None
+        cls_match = _CLASS_RE.search(analysis_attrs)
+        if cls_match:
+            cls = cls_match.group(1)
+            if "elem-warn-red" in cls:
+                warning = "high-or-low"
+            elif "elem-warn-yellow" in cls:
+                warning = "borderline"
+
+        # Cell 3: setpoint as a free-form string (e.g. "415 - 520 mg/l").
+        # We keep it raw rather than parsing — it's diagnostic, and
+        # the parametric form differs across elements (range vs. point).
+        setpoint = unescape(cells[3].group("content")).strip() or None
+
+        elements.append(ParsedElement(
+            symbol=sym,
+            name=name,
+            analysis=value,
+            unit=unit,
+            setpoint=setpoint,
+            warning=warning,
+            group=None,  # Triton groups elements visually via <table>
+                          # boundaries; not extracted in v1.
+        ))
+        seen_symbols.add(sym)
+
+    if not elements:
+        raise ParserError(
+            "Found 0 element rows in the page — Triton's HTML structure "
+            "may have changed since this parser was written."
+        )
+
+    return ParsedReport(
+        test_id="",       # filled in by import_triton_url from the URL
+        sample_date="",   # filled in by import_triton_url from service arg
+        lab_received_date=None,
+        elements=elements,
+        parser_version="phase1-2026-05-06",
     )
 
 
@@ -206,20 +308,43 @@ async def _record_report(
     return imported, skipped
 
 
+def _extract_test_id_from_url(url: str) -> str:
+    """Build a stable, human-recognisable test_id from a Triton URL.
+
+    Triton's public showroom URL is `/icp-oes/<NUMERIC_ID>` and the
+    numeric ID is what we want to dedupe on. Prefix with `triton-` so
+    `coordinator._data["icp_tests"][...]["test_id"]` is greppable in
+    storage and in HA logs.
+    """
+    m = _TEST_ID_FROM_URL_RE.search(url)
+    if m:
+        return f"triton-{m.group(1)}"
+    # Fallback: hash the URL for a stable id when the path shape
+    # doesn't match our expectation. Better than empty/unstable.
+    import hashlib
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    return f"triton-url-{digest}"
+
+
 async def import_triton_url(
     hass: HomeAssistant,
     coordinator: ReefDataCoordinator,
     url: str,
+    sample_date: str | None = None,
 ) -> dict[str, Any]:
     """Top-level orchestration. Fetch → parse → record.
 
-    Returns a summary dict (suitable to log + surface to the user via
-    the service response):
+    `sample_date` (ISO `YYYY-MM-DD`) is optional. If omitted, defaults
+    to today (UTC date) with a logged warning — Triton's public
+    showroom HTML doesn't expose the actual sample date, so the user
+    should pass it explicitly when the test isn't fresh.
+
+    Returns a summary dict suitable for logs + UI feedback:
         {
-          "test_id": "...",
-          "sample_date": "...",
-          "imported": 28,
-          "skipped_symbols": ["NewElement"],
+          "test_id": "triton-229019",
+          "sample_date": "2026-04-16",
+          "imported": 32,
+          "skipped_symbols": [],
         }
 
     Raises ParserError on parse failure with a debug-bundle path
@@ -238,7 +363,6 @@ async def import_triton_url(
 
     try:
         report = parse_triton_showroom(html)
-        report.raw_url = url
     except ParserError as exc:
         bundle = _write_debug_bundle(hass, url, html, exc)
         # Re-raise with the bundle path attached so the surface is
@@ -248,6 +372,22 @@ async def import_triton_url(
             f"{exc} Debug bundle written to: {bundle}",
             debug_path=bundle,
         ) from None
+
+    # Populate the URL-derived + service-arg fields the parser left blank.
+    report.raw_url = url
+    report.test_id = _extract_test_id_from_url(url)
+    if sample_date:
+        report.sample_date = sample_date
+    else:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        report.sample_date = today
+        _LOGGER.warning(
+            "Triton import: no sample_date supplied — defaulting to "
+            "today (%s). Pass `sample_date: YYYY-MM-DD` to the service "
+            "call when importing an older test, otherwise the readings "
+            "land on the wrong day in HA's history graphs.",
+            today,
+        )
 
     imported, skipped = await _record_report(coordinator, report)
     summary = {

@@ -165,6 +165,10 @@ CAPTURE_SNAPSHOT_SCHEMA = vol.Schema({
 
 IMPORT_TRITON_URL_SCHEMA = vol.Schema({
     vol.Required("url"): cv.string,
+    # Triton's public showroom HTML doesn't expose the sample date.
+    # Pass it explicitly (ISO YYYY-MM-DD) for older imports; defaults
+    # to today otherwise.
+    vol.Optional("sample_date"): cv.string,
 })
 
 
@@ -453,8 +457,11 @@ async def _async_register_services(
     async def handle_import_triton_url(call: ServiceCall) -> None:
         from .icp_importer import import_triton_url, ParserError
         url = call.data["url"]
+        sample_date = call.data.get("sample_date")
         try:
-            summary = await import_triton_url(hass, coordinator, url)
+            summary = await import_triton_url(
+                hass, coordinator, url, sample_date=sample_date,
+            )
         except ParserError as exc:
             _LOGGER.error(
                 "Triton URL import failed: %s (debug bundle: %s)",

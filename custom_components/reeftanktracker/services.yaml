@@ -450,9 +450,22 @@ import_triton_url:
   fields:
     url:
       name: Triton showroom URL
-      description: Public URL of the test result page in your Triton account.
+      description: >
+        Public URL of the test result page (e.g.
+        https://www.triton-lab.de/en/showroom/icp-oes/229019).
+        The numeric id at the end becomes the test_id (prefixed
+        `triton-`) so dedupe works on re-imports.
       required: true
-      example: "https://triton-lab.de/.../report/B-KJAZM8"
+      example: "https://www.triton-lab.de/en/showroom/icp-oes/229019"
+      selector:
+        text:
+    sample_date:
+      name: Sample date (YYYY-MM-DD)
+      description: >
+        When the water sample was taken. Triton's public showroom HTML
+        doesn't expose this, so pass it explicitly for older imports.
+        Defaults to today (UTC) with a logged warning if omitted.
+      example: "2026-04-16"
       selector:
         text:
 
