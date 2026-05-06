@@ -22,8 +22,10 @@ from typing import Any
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
+from .const import DOMAIN
 from .coordinator import ReefDataCoordinator
 from .parameters import INPUT_PARAMETERS
 
@@ -67,12 +69,23 @@ async def install_dashboard_if_missing(
     Step 2 covers the 2024+ era cleanly. Step 1 covers older versions.
     Step 3 is the safety net if HA changes the API again — at least the
     dashboard files are written and a restart fixes it.
+
+    Important: WARNING-level logs at every milestone so the user can see
+    progress even with the default log filter. Without these the install
+    looked silent on some setups.
     """
+    _LOGGER.warning(
+        "Reef Tank dashboard install starting (user_removed_flag=%s)",
+        coordinator.is_dashboard_user_removed(),
+    )
     if coordinator.is_dashboard_user_removed():
-        _LOGGER.debug("Dashboard skipped — user previously removed it")
+        _LOGGER.warning(
+            "Dashboard skipped — user_removed_dashboard flag is set. "
+            "Call reeftanktracker.regenerate_dashboard to clear and rebuild."
+        )
         return False
 
-    config = build_dashboard_config()
+    config = build_dashboard_config(hass)
     new_dashboard = {
         "url_path": DASHBOARD_URL_PATH,
         "mode": "storage",
@@ -84,35 +97,53 @@ async def install_dashboard_if_missing(
 
     # ────── Strategy 1: collection on hass.data["lovelace"]
     coll = _try_get_dashboards_collection(hass)
+    _LOGGER.warning("Strategy 1 (in-memory collection): %s",
+                    "available" if coll else "NOT FOUND on hass.data['lovelace']")
     if coll is not None:
         try:
             existing = [
                 d for d in coll.async_items()
                 if d.get("url_path") == DASHBOARD_URL_PATH
             ]
-            if not existing:
+            if existing:
+                _LOGGER.warning(
+                    "Dashboard already registered (Strategy 1) — refreshing content"
+                )
+            else:
                 await coll.async_create_item(new_dashboard)
-                _LOGGER.info(
-                    "Registered Reef Tank dashboard via in-memory collection"
+                _LOGGER.warning(
+                    "✓ Strategy 1: Registered Reef Tank dashboard at /%s "
+                    "via in-memory collection — should appear in sidebar immediately",
+                    DASHBOARD_URL_PATH,
                 )
             await _write_dashboard_content(hass, config)
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
-                "In-memory collection registration failed (%s); "
-                "falling back to bootstrap strategy.", exc,
+                "Strategy 1 raised %s — falling back to bootstrap strategy",
+                exc, exc_info=True,
             )
 
     # ────── Strategy 2: bootstrap a DashboardsCollection from disk
-    try:
-        from homeassistant.components.lovelace.dashboard import (  # noqa: PLC0415
-            DashboardsCollection,
-        )
-    except ImportError:
-        _LOGGER.warning(
-            "DashboardsCollection import failed; falling back to direct file write."
-        )
-    else:
+    DashboardsCollection = None
+    for module_path in (
+        "homeassistant.components.lovelace.dashboard",
+        "homeassistant.components.lovelace",
+    ):
+        try:
+            mod = __import__(module_path, fromlist=["DashboardsCollection"])
+            DashboardsCollection = getattr(mod, "DashboardsCollection", None)
+            if DashboardsCollection is not None:
+                break
+        except ImportError:
+            continue
+
+    _LOGGER.warning(
+        "Strategy 2 (bootstrap DashboardsCollection): %s",
+        "imported" if DashboardsCollection else "NOT FOUND",
+    )
+
+    if DashboardsCollection is not None:
         try:
             dc = DashboardsCollection(hass)
             await dc.async_load()
@@ -120,38 +151,108 @@ async def install_dashboard_if_missing(
                 d for d in dc.async_items()
                 if d.get("url_path") == DASHBOARD_URL_PATH
             ]
-            if not existing:
+            if existing:
+                _LOGGER.warning(
+                    "Dashboard already registered on disk (Strategy 2) — "
+                    "refreshing content. URL: /%s", DASHBOARD_URL_PATH,
+                )
+            else:
                 await dc.async_create_item(new_dashboard)
-                _LOGGER.info(
-                    "Registered Reef Tank dashboard via bootstrapped collection — "
-                    "RESTART Home Assistant to see it in the sidebar."
+                _LOGGER.warning(
+                    "✓ Strategy 2: Registered Reef Tank dashboard at /%s. "
+                    "RESTART Home Assistant once to see it in the sidebar.",
+                    DASHBOARD_URL_PATH,
                 )
             await _write_dashboard_content(hass, config)
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
-                "Bootstrapped collection failed (%s); falling back to direct file write.",
-                exc,
+                "Strategy 2 raised %s — falling back to direct file write",
+                exc, exc_info=True,
             )
 
     # ────── Strategy 3: write the storage files directly. Requires restart.
+    _LOGGER.warning("Strategy 3 (direct file write): writing to .storage/lovelace_dashboards")
     try:
         registry_store = Store(hass, 1, "lovelace_dashboards")
         registry = (await registry_store.async_load()) or {"items": []}
         items = registry.get("items", [])
-        if not any(d.get("url_path") == DASHBOARD_URL_PATH for d in items):
+        if any(d.get("url_path") == DASHBOARD_URL_PATH for d in items):
+            _LOGGER.warning(
+                "Dashboard registry entry exists at /%s — only refreshing content",
+                DASHBOARD_URL_PATH,
+            )
+        else:
             items.append({"id": DASHBOARD_ID, **new_dashboard})
             registry["items"] = items
             await registry_store.async_save(registry)
+            _LOGGER.warning(
+                "✓ Strategy 3: Added /%s to lovelace_dashboards registry. "
+                "RESTART Home Assistant to see it in the sidebar.",
+                DASHBOARD_URL_PATH,
+            )
         await _write_dashboard_content(hass, config)
-        _LOGGER.warning(
-            "Wrote Reef Tank dashboard to .storage directly (HA Lovelace "
-            "API not accessible). RESTART Home Assistant to see it in the sidebar."
-        )
         return True
     except Exception:  # noqa: BLE001
         _LOGGER.exception("All dashboard install strategies failed")
         return False
+
+
+async def diagnose_dashboard(
+    hass: HomeAssistant, coordinator: ReefDataCoordinator
+) -> dict[str, Any]:
+    """Dump what we know about the dashboard install state.
+
+    Surfaced via the `reeftanktracker.diagnose_dashboard` service. Helps
+    figure out which strategy (if any) succeeded and what's currently
+    registered without spelunking through .storage manually.
+    """
+    info: dict[str, Any] = {
+        "user_removed_flag": coordinator.is_dashboard_user_removed(),
+        "expected_url": f"/{DASHBOARD_URL_PATH}",
+    }
+
+    lovelace_data = hass.data.get("lovelace")
+    info["lovelace_data_type"] = type(lovelace_data).__name__
+    info["lovelace_data_keys"] = (
+        list(lovelace_data.keys()) if isinstance(lovelace_data, dict)
+        else [a for a in dir(lovelace_data) if not a.startswith("_")][:20]
+        if lovelace_data else []
+    )
+
+    coll = _try_get_dashboards_collection(hass)
+    info["strategy_1_collection_found"] = coll is not None
+    if coll is not None:
+        info["strategy_1_dashboards"] = [
+            d.get("url_path") for d in coll.async_items()
+        ]
+
+    try:
+        registry_store = Store(hass, 1, "lovelace_dashboards")
+        registry = (await registry_store.async_load()) or {"items": []}
+        info["registry_dashboards"] = [
+            d.get("url_path") for d in registry.get("items", [])
+        ]
+        info["registry_has_reef_tank"] = any(
+            d.get("url_path") == DASHBOARD_URL_PATH
+            for d in registry.get("items", [])
+        )
+    except Exception as exc:  # noqa: BLE001
+        info["registry_error"] = str(exc)
+
+    try:
+        content_store = Store(hass, 1, DASHBOARD_STORE_KEY)
+        content = await content_store.async_load()
+        info["dashboard_content_exists"] = content is not None
+        if content:
+            views = (content.get("config") or {}).get("views") or []
+            info["dashboard_content_views"] = len(views)
+    except Exception as exc:  # noqa: BLE001
+        info["content_error"] = str(exc)
+
+    _LOGGER.warning("Dashboard diagnostic:\n%s",
+                    "\n".join(f"  {k}: {v}" for k, v in info.items()))
+    return info
 
 
 def _try_get_dashboards_collection(hass: HomeAssistant) -> Any:
@@ -201,23 +302,48 @@ async def regenerate_dashboard(
 # ---------------------------------------------------------------------------
 # Layout generators
 # ---------------------------------------------------------------------------
-def build_dashboard_config() -> dict[str, Any]:
+def _build_uid_to_eid(hass: HomeAssistant) -> dict[str, str]:
+    """Map our integration's unique_ids to their actual entity_ids.
+
+    Earlier versions (pre-device-grouping) created entities with names
+    like `sensor.kh_latest`. Later versions emit `sensor.reef_tank_kh_latest`.
+    The HA entity registry keeps original IDs sticky once created, so the
+    actual entity_id depends on which version first registered each one.
+    Always look up at dashboard-generation time rather than guessing.
+    """
+    if hass is None:
+        return {}
+    registry = er.async_get(hass)
+    return {
+        entry.unique_id: entry.entity_id
+        for entry in registry.entities.values()
+        if entry.platform == DOMAIN
+    }
+
+
+def _eid(uid_map: dict[str, str], unique_id: str, fallback_domain: str = "sensor") -> str:
+    """Resolve a unique_id to its actual entity_id, with a sensible fallback."""
+    return uid_map.get(unique_id, f"{fallback_domain}.{unique_id}")
+
+
+def build_dashboard_config(hass: HomeAssistant | None = None) -> dict[str, Any]:
     """Build the full Reef Tank dashboard config from the parameter list."""
+    uid_map = _build_uid_to_eid(hass) if hass else {}
     return {
         "title": "Reef Tank",
         "views": [
-            _build_test_session_view(),
-            _build_overview_view(),
-            _build_diagnostics_view(),
+            _build_test_session_view(uid_map),
+            _build_overview_view(uid_map),
+            _build_diagnostics_view(uid_map),
         ],
     }
 
 
-def _build_test_session_view() -> dict[str, Any]:
+def _build_test_session_view(uid_map: dict[str, str]) -> dict[str, Any]:
     """Hanna run view: per-parameter auto-saving entry rows."""
     entry_rows = [
         {
-            "entity": f"number.reef_tank_{p['id']}_entry",
+            "entity": _eid(uid_map, f"reef_{p['id']}_entry", "number"),
             "name": f"{p['name']} ({p['unit']})",
             "secondary_info": "last-updated",
         }
@@ -226,13 +352,36 @@ def _build_test_session_view() -> dict[str, Any]:
     latest_tiles = [
         {
             "type": "tile",
-            "entity": f"sensor.reef_tank_{p['id']}_latest",
+            "entity": _eid(uid_map, f"reef_{p['id']}_latest"),
             "name": p["name"],
             "vertical": True,
             "state_content": ["state", "last-changed"],
         }
         for p in INPUT_PARAMETERS
     ]
+    # Tank-level tiles. Use the select entities (so they're tappable to
+    # change habitat/problem/method right from the dashboard) when
+    # they're in the registry, else fall back to the read-only sensor.
+    habitat_e = _eid(uid_map, "reef_tank_habitat_select", "select") \
+        if "reef_tank_habitat_select" in uid_map \
+        else _eid(uid_map, "reef_tank_habitat")
+    problem_e = _eid(uid_map, "reef_tank_problem_select", "select") \
+        if "reef_tank_problem_select" in uid_map \
+        else _eid(uid_map, "reef_tank_problem")
+    method_e = _eid(uid_map, "reef_tank_method_select", "select")
+
+    context_cards = [
+        {"type": "heading", "heading": "Tank context", "icon": "mdi:waves"},
+        {"type": "tile", "entity": habitat_e, "name": "Habitat", "icon": "mdi:waves"},
+        {"type": "tile", "entity": problem_e, "name": "Problem",
+         "icon": "mdi:alert-circle-outline"},
+    ]
+    if "reef_tank_method_select" in uid_map:
+        context_cards.append({
+            "type": "tile", "entity": method_e, "name": "Active Test Method",
+            "icon": "mdi:flask-outline",
+        })
+
     return {
         "title": "Test Session",
         "path": "test-session",
@@ -243,21 +392,7 @@ def _build_test_session_view() -> dict[str, Any]:
             {
                 "type": "grid",
                 "column_span": 3,
-                "cards": [
-                    {"type": "heading", "heading": "Tank context", "icon": "mdi:waves"},
-                    {
-                        "type": "tile",
-                        "entity": "sensor.reef_tank_tank_habitat",
-                        "name": "Habitat",
-                        "icon": "mdi:waves",
-                    },
-                    {
-                        "type": "tile",
-                        "entity": "sensor.reef_tank_tank_problem",
-                        "name": "Problem",
-                        "icon": "mdi:alert-circle-outline",
-                    },
-                ],
+                "cards": context_cards,
             },
             {
                 "type": "grid",
@@ -286,20 +421,20 @@ def _build_test_session_view() -> dict[str, Any]:
     }
 
 
-def _build_overview_view() -> dict[str, Any]:
+def _build_overview_view(uid_map: dict[str, str]) -> dict[str, Any]:
     """At-a-glance current values + days-since-test."""
     cards = []
     for p in INPUT_PARAMETERS:
         cards.append({
             "type": "tile",
-            "entity": f"sensor.reef_tank_{p['id']}_latest",
+            "entity": _eid(uid_map, f"reef_{p['id']}_latest"),
             "name": p["name"],
             "vertical": True,
         })
     cards_days = [
         {
             "type": "tile",
-            "entity": f"sensor.reef_tank_{p['id']}_days_since",
+            "entity": _eid(uid_map, f"reef_{p['id']}_days_since"),
             "name": f"{p['name']} last tested",
             "vertical": True,
         }
@@ -334,7 +469,7 @@ def _build_overview_view() -> dict[str, Any]:
     }
 
 
-def _build_diagnostics_view() -> dict[str, Any]:
+def _build_diagnostics_view(uid_map: dict[str, str]) -> dict[str, Any]:
     """Method, drift, and timestamp diagnostics for each parameter."""
     rows = []
     for p in INPUT_PARAMETERS:
@@ -343,14 +478,14 @@ def _build_diagnostics_view() -> dict[str, Any]:
             "title": p["name"],
             "show_header_toggle": False,
             "entities": [
-                {"entity": f"sensor.reef_tank_{p['id']}_latest", "name": "Latest"},
-                {"entity": f"sensor.reef_tank_{p['id']}_latest_method",
+                {"entity": _eid(uid_map, f"reef_{p['id']}_latest"), "name": "Latest"},
+                {"entity": _eid(uid_map, f"reef_{p['id']}_latest_method"),
                  "name": "Method"},
-                {"entity": f"sensor.reef_tank_{p['id']}_latest_at",
+                {"entity": _eid(uid_map, f"reef_{p['id']}_latest_at"),
                  "name": "Sample time"},
-                {"entity": f"sensor.reef_tank_{p['id']}_days_since",
+                {"entity": _eid(uid_map, f"reef_{p['id']}_days_since"),
                  "name": "Days since manual test"},
-                {"entity": f"sensor.reef_tank_{p['id']}_drift",
+                {"entity": _eid(uid_map, f"reef_{p['id']}_drift"),
                  "name": "Drift (manual − auto)"},
             ],
         })

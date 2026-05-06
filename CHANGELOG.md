@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.10
+
+- **Fix the "Entity not found" issue in the auto-installed dashboard.** The dashboard generator now looks up actual entity IDs from HA's entity registry by `unique_id`, instead of guessing from the device-grouped naming pattern. Installs that started on v0.1.0 (entity IDs like `sensor.kh_latest`) will now get a working dashboard, as will installs that started on v0.1.2+ (entity IDs like `sensor.reef_tank_kh_latest`) — same logic, both work.
+- Tank context section uses the `select` entities (Habitat / Problem / Active Test Method) when available, so they're tappable directly from the dashboard. Falls back to read-only sensors on older installs that don't have selects yet.
+- Deprecated the static `dashboards/test-session.yaml` in the repo — entity IDs in static YAML can't anticipate which version first registered the entities. Always use the auto-installed dashboard.
+
+## 0.1.9
+
+- **Integration icon.** A custom `icon.png` (256×256, plus 512×512 @2x) ships with the integration so it no longer appears as "icon not available" in HACS / Devices & Services.
+- **Dashboard install loud-mode.** Every milestone in the install path now logs at WARNING level (visible by default). You'll see exactly which strategy succeeded — Strategy 1 (in-memory collection), Strategy 2 (bootstrap), or Strategy 3 (direct file write) — or which one raised, with traceback.
+- **New `reeftanktracker.diagnose_dashboard` service.** Dumps current install state to the log: what's on `hass.data["lovelace"]`, contents of the dashboards registry, whether the dashboard content blob is on disk, and the user-removed flag. Run this when the dashboard isn't appearing and paste the log output to debug.
+
 ## 0.1.8
 
 - **Fix: historical data now appears on history graphs at the correct time.** Previously every recorded reading became a state change at "now", with the actual sample date only stored as an attribute. Imported 2023 data piled up at "today" and graphs showed nothing meaningful. Now `record_reading` *also* writes to HA's long-term statistics table (via `recorder.async_import_statistics`) using the real `sample_taken_at`, so the history graph card shows the proper timeline.

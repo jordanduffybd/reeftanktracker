@@ -220,6 +220,14 @@ backfill_statistics:
       selector:
         text:
 
+diagnose_dashboard:
+  name: Diagnose Dashboard
+  description: >
+    Logs (at WARNING level, visible by default) what the integration
+    knows about the auto-installed dashboard — which strategy succeeded,
+    what's in the lovelace_dashboards registry, whether the dashboard
+    content is on disk. Useful when the dashboard isn't appearing.
+
 regenerate_dashboard:
   name: Regenerate Dashboard
   description: >

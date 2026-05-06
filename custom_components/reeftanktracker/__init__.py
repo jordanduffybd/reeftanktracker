@@ -34,6 +34,7 @@ from .const import (
 from .config_flow import OPT_AUTO_SOURCE_PREFIX, auto_source_key
 from .coordinator import ReefDataCoordinator
 from .dashboard import (
+    diagnose_dashboard,
     install_dashboard_if_missing,
     regenerate_dashboard,
     schedule_install,
@@ -42,6 +43,7 @@ from .parameters import INPUT_PARAMETERS
 
 SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
 SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
+SERVICE_DIAGNOSE_DASHBOARD = "diagnose_dashboard"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -154,7 +156,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_RECORD_READING, SERVICE_ADD_INVENTORY,
                 SERVICE_REMOVE_INVENTORY, SERVICE_SET_HABITAT,
                 SERVICE_IMPORT_ICP, SERVICE_REGENERATE_DASHBOARD,
-                SERVICE_BACKFILL_STATISTICS,
+                SERVICE_BACKFILL_STATISTICS, SERVICE_DIAGNOSE_DASHBOARD,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -213,6 +215,11 @@ async def _async_register_services(
         )
         _LOGGER.info("Backfilled %d statistic points", n)
 
+    async def handle_diagnose_dashboard(call: ServiceCall) -> None:
+        # Logs the diagnostic at WARNING level so it's visible at the
+        # default log level — no need to bump verbosity.
+        await diagnose_dashboard(hass, coordinator)
+
     if not hass.services.has_service(DOMAIN, SERVICE_RECORD_READING):
         hass.services.async_register(
             DOMAIN, SERVICE_RECORD_READING, handle_record_reading,
@@ -240,4 +247,7 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_BACKFILL_STATISTICS, handle_backfill_statistics,
             schema=vol.Schema({vol.Optional("parameter"): cv.string}),
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_DIAGNOSE_DASHBOARD, handle_diagnose_dashboard,
         )

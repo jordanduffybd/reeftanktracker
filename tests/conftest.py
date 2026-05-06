@@ -93,6 +93,13 @@ def _install_ha_stubs() -> None:
     selector.EntitySelectorConfig = lambda **kw: kw
     sys.modules["homeassistant.helpers.selector"] = selector
 
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+    class _Registry:
+        entities: dict = {}
+    def _async_get(_hass): return _Registry()
+    entity_registry.async_get = _async_get
+    sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
+
     dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
     dispatcher.async_dispatcher_send = MagicMock()
     sys.modules["homeassistant.helpers.dispatcher"] = dispatcher
