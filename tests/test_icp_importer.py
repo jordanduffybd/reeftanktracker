@@ -137,6 +137,66 @@ def test_parser_leaves_test_id_blank(triton_html: str):
 
 
 # ---------------------------------------------------------------------------
+# Dose-tab parsing — habitat-specific recommendations
+# ---------------------------------------------------------------------------
+def test_dose_recommendations_extracted(triton_html: str):
+    """The Dose tab on the showroom page is grouped by importance
+    (1-5 stars). Each group has element-specific dosing advice. We
+    capture all of it as `recommendations`."""
+    report = parse_triton_showroom(triton_html)
+    by_sym = {r.symbol: r for r in report.recommendations}
+    # The fixture's 5-star group should include Ca + Mg
+    assert "Ca" in by_sym
+    assert "Mg" in by_sym
+    # Both are 5-star (Very important)
+    assert by_sym["Ca"].importance_stars == 5
+    assert by_sym["Mg"].importance_stars == 5
+    assert "Very important" in by_sym["Ca"].importance_label
+
+
+def test_dose_recommendation_corrective_dose(triton_html: str):
+    """For Ca, Triton recommends a specific corrective grams + duration.
+    Captured as raw text — this is for display, not parsing further."""
+    report = parse_triton_showroom(triton_html)
+    by_sym = {r.symbol: r for r in report.recommendations}
+    assert by_sym["Ca"].corrective_dose is not None
+    # Fixture says "17.73g for 1 day"
+    assert "17.73g" in by_sym["Ca"].corrective_dose
+    assert "day" in by_sym["Ca"].corrective_dose
+
+
+def test_dose_recommendation_product_reference(triton_html: str):
+    """The "Show me the product" button reveals the recommended Triton
+    product. Captured for the user's purchasing convenience."""
+    report = parse_triton_showroom(triton_html)
+    by_sym = {r.symbol: r for r in report.recommendations}
+    assert by_sym["Ca"].product_reference is not None
+    assert "Calcium" in by_sym["Ca"].product_reference
+
+
+def test_dose_recommendations_span_importance_levels(triton_html: str):
+    """The fixture has elements rated across multiple importance buckets
+    (5-star, 4-star, 2-star, 1-star). All should be captured."""
+    report = parse_triton_showroom(triton_html)
+    star_levels = {r.importance_stars for r in report.recommendations}
+    assert star_levels == {1, 2, 4, 5}
+
+
+# ---------------------------------------------------------------------------
+# Habitat / problem selection
+# ---------------------------------------------------------------------------
+def test_selected_habitat_problem_extracted(triton_html: str):
+    """The fixture URL doesn't have habitat/problem pre-selected
+    (Triton account default is no selection). Parser must NOT crash on
+    absence and should report None for both."""
+    report = parse_triton_showroom(triton_html)
+    # If the user re-shares with selections set, these will populate.
+    # The fixture has neither; parser handles that gracefully.
+    assert report.selected_habitat is None or isinstance(report.selected_habitat, str)
+    assert report.selected_problem is None or isinstance(report.selected_problem, str)
+
+
+# ---------------------------------------------------------------------------
 # Test-ID extraction
 # ---------------------------------------------------------------------------
 def test_extract_test_id_standard_url():

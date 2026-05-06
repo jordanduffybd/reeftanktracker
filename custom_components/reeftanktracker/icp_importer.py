@@ -70,6 +70,59 @@ _VALUE_UNIT_RE = re.compile(
 )
 _TEST_ID_FROM_URL_RE = re.compile(r"/icp-oes/(\d+)")
 
+# Dose-tab parsing. Each element rated for dosing is wrapped in
+#   <div class="dosage-block dosage-block-Ca"> ... </div>
+# inside a parent group:
+#   <div class="dosage-block-group dosage-block-group-N"> <h3>label</h3> ... </div>
+# where N is the importance rating (1-5; 5 is the most important).
+_DOSE_GROUP_RE = re.compile(
+    r'<div class="dosage-block-group dosage-block-group-(?P<stars>\d+)">'
+    r'(?P<body>.*?)'
+    r'(?=<div class="dosage-block-group |</section>)',
+    re.DOTALL,
+)
+_DOSE_GROUP_TITLE_RE = re.compile(r"<h3>([^<]+)</h3>")
+_DOSE_BLOCK_RE = re.compile(
+    # Match each dose block from its opening tag to the next sibling
+    # block's opening tag (or end of the enclosing group body). Using
+    # a lookahead avoids the depth-counting we'd need to balance the
+    # nested <div class="advice-item ..."> children.
+    r'<div class="dosage-block dosage-block-(?P<sym>\w+)">(?P<body>.*?)'
+    r'(?=<div class="dosage-block dosage-block-|\Z)',
+    re.DOTALL,
+)
+# Inside a dose block: detection-style paragraph in advice-detection,
+# corrective-dose in advice-measures, product reference in onclick handler.
+_DOSE_DETECTION_RE = re.compile(
+    r'<div class="advice-item advice-detection">(?P<body>.*?)</div>',
+    re.DOTALL,
+)
+_DOSE_MEASURE_RE = re.compile(
+    r'<div class="advice-item advice-measures">(?P<body>.*?)</div>',
+    re.DOTALL,
+)
+# Stop at sentence-end (period followed by space or `<`) rather than
+# any period — values like "17.73g for 1 day" have an internal decimal
+# that an "any period" stop truncates incorrectly.
+_DOSE_AMOUNT_RE = re.compile(r"corrective dosage of\s+(.+?)(?=\.\s|\.<|<)")
+_DOSE_PRODUCT_RE = re.compile(
+    r"window\.t43857093847509387\(\s*['\"]([^'\"]+)['\"]"
+)
+_TAG_STRIP_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Selected habitat / problem in the dropdowns
+_SELECTED_OPTION_RE = re.compile(
+    r'<option value="(?P<value>[^"]+)"\s+selected="?selected"?[^>]*>'
+    r'(?P<text>[^<]+)</option>'
+)
+_DROPDOWN_HABITAT_RE = re.compile(
+    r'<select id="dropdown_habitat">(.*?)</select>', re.DOTALL,
+)
+_DROPDOWN_PROBLEM_RE = re.compile(
+    r'<select id="dropdown_problem">(.*?)</select>', re.DOTALL,
+)
+
 
 # ---------------------------------------------------------------------------
 # Parsed-report shape
@@ -87,18 +140,40 @@ class ParsedElement:
 
 
 @dataclass
+class DoseRecommendation:
+    """A per-element dosing recommendation from Triton's Dose tab.
+
+    Triton's recommendation depends on the user's chosen habitat AND
+    problem at share time. Re-share with different selections to get
+    different recommendations.
+    """
+    symbol: str                # element identifier ("Ca", "Mg", ...)
+    importance_stars: int      # 1-5 (5 = "Very important", 1 = "Advanced fine-tuning")
+    importance_label: str      # the heading: "Very important for your aquarium" etc.
+    advice_text: str | None    # detection-style advice paragraph
+    corrective_dose: str | None  # raw text e.g. "17.73g for 1 day"
+    product_reference: str | None  # e.g. "Triton Reagents Calcium 1000g"
+
+
+@dataclass
 class ParsedReport:
     """Full parsed Triton report.
 
     `test_id` is what we dedupe on in `async_record_icp_test`. Must be
-    stable for a given physical test. Triton's test reference (e.g.
-    `B-KJAZM8`) is the natural choice; if it isn't recoverable from the
-    page we fall back to a hash of url + sample_date and warn.
+    stable for a given physical test. We use `triton-<numeric-url-id>`.
+
+    `selected_habitat` / `selected_problem` reflect the user's choices
+    when generating the showroom URL. Different choices change the
+    rendered dose recommendations — re-share with different selections
+    if you want a different view.
     """
     test_id: str
     sample_date: str       # ISO date, "YYYY-MM-DD"
     lab_received_date: str | None
     elements: list[ParsedElement] = field(default_factory=list)
+    recommendations: list[DoseRecommendation] = field(default_factory=list)
+    selected_habitat: str | None = None
+    selected_problem: str | None = None
     raw_url: str | None = None
     parser_version: str = "phase1-stub"
 
@@ -117,6 +192,84 @@ class ParserError(Exception):
 # ---------------------------------------------------------------------------
 # Pure parser — exercised by tests with HTML fixtures
 # ---------------------------------------------------------------------------
+def _strip_html_to_text(html_fragment: str) -> str:
+    """Strip tags and collapse whitespace for human-readable advice text."""
+    text = _TAG_STRIP_RE.sub(" ", html_fragment)
+    text = unescape(text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text
+
+
+def _parse_dose_recommendations(html: str) -> list[DoseRecommendation]:
+    """Extract per-element dose recommendations from the Dose tab.
+
+    Each importance group (1-5 stars) wraps a list of element blocks.
+    The 5-star group is "Very important for your aquarium" and contains
+    the elements Triton most strongly recommends dosing.
+    """
+    recs: list[DoseRecommendation] = []
+    for group in _DOSE_GROUP_RE.finditer(html):
+        try:
+            stars = int(group.group("stars"))
+        except (TypeError, ValueError):
+            continue
+        body = group.group("body")
+        title_m = _DOSE_GROUP_TITLE_RE.search(body)
+        title = (title_m.group(1) if title_m else "").strip()
+        for block in _DOSE_BLOCK_RE.finditer(body):
+            sym = block.group("sym")
+            block_body = block.group("body")
+
+            advice = None
+            det_m = _DOSE_DETECTION_RE.search(block_body)
+            if det_m:
+                advice = _strip_html_to_text(det_m.group("body"))
+                # Strip the leading <i class="..."> icon-only text remnants
+                advice = advice.lstrip()
+
+            corrective = None
+            meas_m = _DOSE_MEASURE_RE.search(block_body)
+            if meas_m:
+                amt_m = _DOSE_AMOUNT_RE.search(meas_m.group("body"))
+                if amt_m:
+                    corrective = amt_m.group(1).strip()
+
+            product = None
+            prod_m = _DOSE_PRODUCT_RE.search(block_body)
+            if prod_m:
+                product = prod_m.group(1).strip()
+
+            recs.append(DoseRecommendation(
+                symbol=sym,
+                importance_stars=stars,
+                importance_label=title,
+                advice_text=advice,
+                corrective_dose=corrective,
+                product_reference=product,
+            ))
+    return recs
+
+
+def _parse_selected_habitat_problem(
+    html: str,
+) -> tuple[str | None, str | None]:
+    """Find the habitat + problem the user chose at share time. Either
+    may be None if the user hadn't picked them in their Triton account.
+    """
+    habitat = problem = None
+    h_m = _DROPDOWN_HABITAT_RE.search(html)
+    if h_m:
+        sel = _SELECTED_OPTION_RE.search(h_m.group(1))
+        if sel:
+            habitat = sel.group("text").strip()
+    p_m = _DROPDOWN_PROBLEM_RE.search(html)
+    if p_m:
+        sel = _SELECTED_OPTION_RE.search(p_m.group(1))
+        if sel:
+            problem = sel.group("text").strip()
+    return habitat, problem
+
+
 def parse_triton_showroom(html: str) -> ParsedReport:
     """Parse a Triton public showroom HTML page into a ParsedReport.
 
@@ -209,11 +362,20 @@ def parse_triton_showroom(html: str) -> ParsedReport:
             "may have changed since this parser was written."
         )
 
+    # Dose recommendations from the Dose tab + selected habitat/problem.
+    # Best-effort: a missing Dose tab doesn't fail the parse; the
+    # report just lacks recommendations.
+    recommendations = _parse_dose_recommendations(html)
+    selected_habitat, selected_problem = _parse_selected_habitat_problem(html)
+
     return ParsedReport(
         test_id="",       # filled in by import_triton_url from the URL
         sample_date="",   # filled in by import_triton_url from service arg
         lab_received_date=None,
         elements=elements,
+        recommendations=recommendations,
+        selected_habitat=selected_habitat,
+        selected_problem=selected_problem,
         parser_version="phase1-2026-05-06",
     )
 
@@ -294,6 +456,22 @@ async def _record_report(
             "group": el.group,
         }
 
+    # Persist habitat-specific dosing recommendations alongside the
+    # element analyses. These are what change when the user picks a
+    # different habitat or problem on Triton's site — so they're
+    # snapshot-tied to whichever combo was selected at share time.
+    recommendations_blob = [
+        {
+            "symbol": r.symbol,
+            "importance_stars": r.importance_stars,
+            "importance_label": r.importance_label,
+            "advice_text": r.advice_text,
+            "corrective_dose": r.corrective_dose,
+            "product_reference": r.product_reference,
+        }
+        for r in report.recommendations
+    ]
+
     test_record = {
         "test_id": report.test_id,
         "sample_date": report.sample_date,
@@ -301,7 +479,10 @@ async def _record_report(
         "imported_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "source": "triton-url",
         "url": report.raw_url,
+        "selected_habitat": report.selected_habitat,
+        "selected_problem": report.selected_problem,
         "elements": elements_blob,
+        "recommendations": recommendations_blob,
     }
     await coordinator.async_record_icp_test(test_record)
 
