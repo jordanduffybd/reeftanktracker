@@ -1,0 +1,36 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: reef-dev-ha
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./config:/config
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - mosquitto
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: reef-dev-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/data:/mosquitto/data
+
+  mirror:
+    build: ./tools
+    container_name: reef-dev-mirror
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - homeassistant

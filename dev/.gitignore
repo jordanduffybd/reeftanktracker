@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# HA runtime state (regenerated on every container start)
+config/.storage/
+config/.cloud/
+config/deps/
+config/tts/
+config/.HA_VERSION
+config/home-assistant.log
+config/home-assistant.log.*
+config/home-assistant_v2.db
+config/home-assistant_v2.db-shm
+config/home-assistant_v2.db-wal
+config/blueprints/
+
+# Mosquitto retained-message store
+mosquitto/data/
+mosquitto/log/
+
+# Symlink target — git stores the symlink itself, but the resolved
+# directory (custom_components/reeftanktracker) lives in the parent repo
+# and shouldn't be duplicated here.

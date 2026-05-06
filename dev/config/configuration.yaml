@@ -1,0 +1,22 @@
+# Dev HA configuration. Minimal — most things are configured via the UI
+# (integrations, Reef Tank Tracker setup, dashboards).
+
+default_config:
+
+# Match prod's timezone for sensible timestamps in snapshots.
+homeassistant:
+  name: Reef Dev
+  unit_system: metric
+  time_zone: Australia/Brisbane
+
+# Local broker. The kh-keeper-bridge is NOT run in dev (it would fight
+# with prod for control of the physical KH Keeper device). The mirror
+# script populates `sensor.kh_keeper_*` directly via REST instead.
+mqtt:
+  broker: mosquitto
+  port: 1883
+
+logger:
+  default: info
+  logs:
+    custom_components.reeftanktracker: debug
