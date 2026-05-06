@@ -31,14 +31,20 @@ from .const import (
     SOURCE_ICP,
     SOURCE_MANUAL,
 )
+from .config_flow import OPT_AUTO_SOURCE_PREFIX, auto_source_key
 from .coordinator import ReefDataCoordinator
-from .dashboard import install_dashboard_if_missing, regenerate_dashboard
+from .dashboard import (
+    install_dashboard_if_missing,
+    regenerate_dashboard,
+    schedule_install,
+)
+from .parameters import INPUT_PARAMETERS
 
 SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "number"]
+PLATFORMS = ["sensor", "number", "select"]
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +93,41 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _resolve_auto_sources(entry: ConfigEntry) -> dict[str, str]:
+    """Build the param_id → sensor entity_id map.
+
+    Precedence:
+      1. user-saved options (entry.options[auto_source_<param>])
+      2. hardcoded default in parameters.py (param["auto_source"])
+      3. nothing — manual / ICP-only
+    """
+    resolved: dict[str, str] = {}
+    for p in INPUT_PARAMETERS:
+        saved = entry.options.get(auto_source_key(p["id"]))
+        default = p.get("auto_source")
+        chosen = saved if saved else default
+        if chosen:
+            resolved[p["id"]] = chosen
+    return resolved
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the integration when options change so new auto-sources take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     coordinator = ReefDataCoordinator(hass)
     await coordinator.async_load()
+    coordinator.set_auto_sources(_resolve_auto_sources(entry))
     hass.data[DOMAIN][entry.entry_id] = coordinator
+
+    # When the user changes options, reload the entry so the new
+    # auto-source map is picked up by all sensors.
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     # Register services. They're registered on the first entry only —
     # since we're single-instance, that's a non-issue.
@@ -101,12 +135,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Auto-install the Lovelace dashboard (skipped if user previously
-    # removed it; a regenerate_dashboard service brings it back).
-    try:
-        await install_dashboard_if_missing(hass, coordinator)
-    except Exception:  # noqa: BLE001
-        _LOGGER.exception("Failed to install Reef Tank dashboard (continuing)")
+    # Auto-install the Lovelace dashboard. Deferred until HA is started
+    # so the lovelace integration's data is fully populated — calling
+    # this from setup-entry directly is too early on a cold boot.
+    schedule_install(hass, coordinator)
 
     return True
 

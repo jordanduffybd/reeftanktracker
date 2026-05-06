@@ -139,8 +139,9 @@ class ReefLatestSensor(_ReefSensorBase):
         latest = self._coordinator.latest_reading(self._param["id"])
         if latest is not None:
             return _round(latest["value"], self._param.get("precision"))
-        # Auto fallback
-        auto_src = self._param.get("auto_source")
+        # Auto fallback — coordinator resolves user-configured override
+        # over the hardcoded default in parameters.py.
+        auto_src = self._coordinator.get_auto_source(self._param["id"])
         if auto_src:
             state = self.hass.states.get(auto_src)
             if state and state.state not in ("unknown", "unavailable", None):
@@ -153,8 +154,12 @@ class ReefLatestSensor(_ReefSensorBase):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         latest = self._coordinator.latest_reading(self._param["id"])
+        auto_src = self._coordinator.get_auto_source(self._param["id"])
         if not latest:
-            return {"source": "auto" if self._param.get("auto_source") else None}
+            return {
+                "source": "auto" if auto_src else None,
+                "auto_source_entity": auto_src,
+            }
         return {
             "source": latest["source"],
             "method": latest.get("method"),
@@ -162,6 +167,7 @@ class ReefLatestSensor(_ReefSensorBase):
             "recorded_at": latest["recorded_at"],
             "test_id": latest.get("test_id"),
             "notes": latest.get("notes"),
+            "auto_source_entity": auto_src,
         }
 
 
@@ -243,7 +249,7 @@ class ReefDriftSensor(_ReefSensorBase):
 
     @property
     def native_value(self) -> float | None:
-        auto_src = self._param.get("auto_source")
+        auto_src = self._coordinator.get_auto_source(self._param["id"])
         if not auto_src:
             return None
         manual = self._coordinator.latest_manual(self._param["id"])

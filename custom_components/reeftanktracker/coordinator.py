@@ -86,6 +86,10 @@ class ReefDataCoordinator:
         self.hass = hass
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._data: dict[str, Any] = {}
+        # Map of parameter_id → entity_id used as the auto-source.
+        # Populated from config_entry.options at setup, falls back to
+        # the parameter's hardcoded default if no override is set.
+        self._auto_sources: dict[str, str] = {}
 
     async def async_load(self) -> None:
         loaded = await self._store.async_load()
@@ -108,6 +112,17 @@ class ReefDataCoordinator:
             # Lovelace dashboard. Prevents it from coming back on next boot.
             "user_removed_dashboard": False,
         }
+
+    # ------------------------------------------------------------------
+    # Auto-source sensor map (configured via OptionsFlow)
+    # ------------------------------------------------------------------
+    def set_auto_sources(self, mapping: dict[str, str]) -> None:
+        """Replace the parameter→sensor map. Empty strings drop entries."""
+        self._auto_sources = {k: v for k, v in mapping.items() if v}
+
+    def get_auto_source(self, param_id: str) -> str | None:
+        """Return the configured auto-source entity_id for a parameter, or None."""
+        return self._auto_sources.get(param_id)
 
     # ------------------------------------------------------------------
     # Dashboard flag

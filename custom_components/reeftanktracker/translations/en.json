@@ -9,5 +9,13 @@
     "abort": {
       "already_configured": "Reef Tank Tracker is already set up. It supports a single tank per HA instance."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Auto-source sensors",
+        "description": "For each parameter, optionally pick a sensor whose value will be used as the 'latest' fallback when no manual reading is fresh. Defaults are pre-filled where we know about them (e.g. KH Keeper, ATO probe). Leave a row empty for manual / ICP-only parameters."
+      }
+    }
   }
 }

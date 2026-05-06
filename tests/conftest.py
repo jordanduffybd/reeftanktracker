@@ -45,15 +45,22 @@ def _install_ha_stubs() -> None:
         sys.modules["voluptuous"] = vol
 
     ha = types.ModuleType("homeassistant")
+    ha.__path__ = []  # marks it as a package so submodules can be imported
     sys.modules["homeassistant"] = ha
+
+    const = types.ModuleType("homeassistant.const")
+    const.EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
+    sys.modules["homeassistant.const"] = const
 
     core = types.ModuleType("homeassistant.core")
     class HomeAssistant:  # noqa: D401
         """Stub HA instance."""
     class ServiceCall:
         def __init__(self, data): self.data = data
+    def callback(fn): return fn  # decorator no-op
     core.HomeAssistant = HomeAssistant
     core.ServiceCall = ServiceCall
+    core.callback = callback
     sys.modules["homeassistant.core"] = core
 
     config_entries = types.ModuleType("homeassistant.config_entries")
@@ -64,8 +71,13 @@ def _install_ha_stubs() -> None:
         def _abort_if_unique_id_configured(self): pass
         def async_create_entry(self, **kw): return kw
         def async_show_form(self, **kw): return kw
+    class OptionsFlow:
+        def __init_subclass__(cls, **kw): pass
+        def async_create_entry(self, **kw): return kw
+        def async_show_form(self, **kw): return kw
     config_entries.ConfigEntry = ConfigEntry
     config_entries.ConfigFlow = ConfigFlow
+    config_entries.OptionsFlow = OptionsFlow
     sys.modules["homeassistant.config_entries"] = config_entries
 
     data_entry_flow = types.ModuleType("homeassistant.data_entry_flow")
@@ -73,7 +85,13 @@ def _install_ha_stubs() -> None:
     sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
 
     helpers = types.ModuleType("homeassistant.helpers")
+    helpers.__path__ = []
     sys.modules["homeassistant.helpers"] = helpers
+
+    selector = types.ModuleType("homeassistant.helpers.selector")
+    selector.EntitySelector = lambda *a, **kw: lambda v: v
+    selector.EntitySelectorConfig = lambda **kw: kw
+    sys.modules["homeassistant.helpers.selector"] = selector
 
     dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
     dispatcher.async_dispatcher_send = MagicMock()

@@ -21,6 +21,14 @@ A Home Assistant custom integration for tracking reef aquarium water parameters,
 
 - **[icpimport](https://github.com/jordanduffybd/icpimport)** — Triton ICP-OES importer (paste a public showroom URL, fetches the full habitat × problem recommendation matrix into HA)
 
+## Documentation
+
+- **[docs/RELEASING.md](docs/RELEASING.md)** — how to cut a release HACS will actually pick up (TL;DR: GitHub Releases, not bare tags)
+- **[docs/DASHBOARD.md](docs/DASHBOARD.md)** — auto-install behaviour, regenerating, customising
+- **[docs/SERVICES.md](docs/SERVICES.md)** — every `reeftanktracker.*` service and its fields
+- **[CHANGELOG.md](CHANGELOG.md)** — what changed per release
+- **[tests/README.md](tests/README.md)** — running the test suite
+
 ## Status
 
 Early development. Parameter tracking + manual entry first; inventory and ICP integration to follow.

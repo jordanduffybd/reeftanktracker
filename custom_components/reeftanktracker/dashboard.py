@@ -1,23 +1,27 @@
 """Auto-install + regenerate the Reef Tank Lovelace dashboard.
 
-On first integration setup we create a new dashboard at
-`/reef-tank-tracker` populated with cards for every parameter, an entry
-section, latest values, and cadence diagnostics. The dashboard config is
-written via HA's `Store` helpers — same mechanism HA uses internally —
-so it's editable after install (the user can tweak cards manually
-without losing them on integration reload).
+We add a new storage-mode dashboard at `/reef-tank-tracker` populated
+with cards for every parameter, an entry section, latest values, and
+diagnostics. We use HA's Lovelace `dashboards_collection` API directly
+(rather than writing storage files) so the registration is reflected
+in HA's in-memory state immediately — no HA restart required.
+
+Triggered via `homeassistant_started` event so it runs after the
+lovelace integration is fully initialised. Setup-entry calls run too
+early to safely touch lovelace internals.
 
 A `user_removed_dashboard` flag in the coordinator's storage prevents
-re-creation if the user explicitly removes the dashboard. To bring it
+re-creation if the user explicitly deletes the dashboard. To bring it
 back, call `reeftanktracker.regenerate_dashboard` (which clears the
-flag and writes a fresh layout).
+flag and rebuilds the layout).
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .coordinator import ReefDataCoordinator
@@ -25,13 +29,27 @@ from .parameters import INPUT_PARAMETERS
 
 _LOGGER = logging.getLogger(__name__)
 
-# HA's storage-mode Lovelace uses these conventions:
-#   .storage/lovelace_dashboards    — registry of all custom dashboards
-#   .storage/lovelace.<url_path>    — content of each dashboard
 DASHBOARD_URL_PATH = "reef-tank-tracker"
 DASHBOARD_ID = "reef_tank_tracker"
 DASHBOARD_STORE_KEY = f"lovelace.{DASHBOARD_ID}"
-DASHBOARDS_REGISTRY_KEY = "lovelace_dashboards"
+
+
+def schedule_install(hass: HomeAssistant, coordinator: ReefDataCoordinator) -> None:
+    """Delay dashboard install until HA is fully started.
+
+    Called from `async_setup_entry`. If HA's already running (e.g. on
+    config reload) we install immediately; otherwise we wait for the
+    `homeassistant_started` event so the lovelace integration is up.
+    """
+    if hass.is_running:
+        hass.async_create_task(install_dashboard_if_missing(hass, coordinator))
+        return
+
+    @callback
+    def _on_started(_event: Any) -> None:
+        hass.async_create_task(install_dashboard_if_missing(hass, coordinator))
+
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
 
 
 async def install_dashboard_if_missing(
@@ -39,34 +57,63 @@ async def install_dashboard_if_missing(
 ) -> bool:
     """Create the Reef Tank dashboard if it doesn't already exist.
 
-    Returns True if a fresh dashboard was created or refreshed.
-    Returns False if skipped (user-removed flag, or HA Lovelace not
-    in storage mode and we don't want to fight that).
+    Returns True if a dashboard was created or its content rewritten.
     """
     if coordinator.is_dashboard_user_removed():
         _LOGGER.debug("Dashboard skipped — user previously removed it")
         return False
 
-    # Add to dashboards registry so it appears in the sidebar.
-    registry_store = Store(hass, 1, DASHBOARDS_REGISTRY_KEY)
-    registry = (await registry_store.async_load()) or {"items": []}
-    items = registry.get("items", [])
+    # ─────────────────────────────────────────────────────────────────
+    # Step 1: register the dashboard in HA's in-memory dashboards
+    # collection (so it appears in the sidebar without restart).
+    # ─────────────────────────────────────────────────────────────────
+    lovelace_data = hass.data.get("lovelace")
+    if not lovelace_data:
+        _LOGGER.warning(
+            "Lovelace integration not loaded yet — cannot auto-install "
+            "dashboard. Call reeftanktracker.regenerate_dashboard later."
+        )
+        return False
 
-    if not any(d.get("url_path") == DASHBOARD_URL_PATH for d in items):
-        items.append({
-            "id": DASHBOARD_ID,
-            "url_path": DASHBOARD_URL_PATH,
-            "mode": "storage",
-            "title": "Reef Tank",
-            "icon": "mdi:fishbowl",
-            "show_in_sidebar": True,
-            "require_admin": False,
-        })
-        registry["items"] = items
-        await registry_store.async_save(registry)
-        _LOGGER.info("Registered Reef Tank dashboard at /%s", DASHBOARD_URL_PATH)
+    # `lovelace_data` may be a LovelaceData dataclass or a dict
+    # depending on HA version. Handle both shapes.
+    dashboards_collection = (
+        getattr(lovelace_data, "dashboards_collection", None)
+        or (lovelace_data.get("dashboards_collection")
+            if isinstance(lovelace_data, dict) else None)
+    )
+    if dashboards_collection is None:
+        _LOGGER.warning(
+            "Could not find lovelace dashboards_collection on hass.data; "
+            "skipping auto-install (HA Lovelace API shape changed?)."
+        )
+        return False
 
-    # Write the dashboard contents.
+    # Check if already registered
+    existing = [
+        d for d in dashboards_collection.async_items()
+        if d.get("url_path") == DASHBOARD_URL_PATH
+    ]
+    if not existing:
+        try:
+            await dashboards_collection.async_create_item({
+                "url_path": DASHBOARD_URL_PATH,
+                "mode": "storage",
+                "title": "Reef Tank",
+                "icon": "mdi:fishbowl",
+                "show_in_sidebar": True,
+                "require_admin": False,
+            })
+            _LOGGER.info("Registered Reef Tank dashboard at /%s", DASHBOARD_URL_PATH)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("Failed to register dashboard: %s", exc, exc_info=True)
+            return False
+
+    # ─────────────────────────────────────────────────────────────────
+    # Step 2: write the dashboard's content via Store.
+    # The lovelace integration reads `lovelace.<id>` from .storage on
+    # demand when the dashboard is opened, so writing here is enough.
+    # ─────────────────────────────────────────────────────────────────
     dashboard_store = Store(hass, 1, DASHBOARD_STORE_KEY)
     config = build_dashboard_config()
     await dashboard_store.async_save({"config": config})
