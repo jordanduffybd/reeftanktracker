@@ -7,3 +7,17 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Private project notes and plans (not for the public repo)
+internal/
+
+# Claude Code per-project state
+.claude/
+
+# Local virtualenvs
+.venv/
+.venv-tools/
+
+# Test caches
+.pytest_cache/
+.ruff_cache/
