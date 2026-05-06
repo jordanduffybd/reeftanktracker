@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Reef Tank Tracker",
+        "description": "Set up tracking for one reef aquarium. After setup you can configure habitat, problem, and inventory via Lovelace or services."
+      }
+    },
+    "abort": {
+      "already_configured": "Reef Tank Tracker is already set up. It supports a single tank per HA instance."
+    }
+  },
+  "services": {
+    "record_reading": {
+      "name": "Record Reading",
+      "description": "Log a parameter reading."
+    },
+    "add_inventory": {
+      "name": "Add Inventory Item",
+      "description": "Add a coral, fish, or other inhabitant."
+    },
+    "remove_inventory": {
+      "name": "Remove Inventory Item",
+      "description": "Mark an inventory entry as removed."
+    },
+    "set_habitat": {
+      "name": "Set Habitat / Problem",
+      "description": "Update tank context."
+    },
+    "import_icp": {
+      "name": "Import ICP Test",
+      "description": "Persist an ICP-OES test record."
+    }
+  }
+}

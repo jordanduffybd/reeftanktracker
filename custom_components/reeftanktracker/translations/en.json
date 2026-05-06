@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Reef Tank Tracker",
+        "description": "Set up tracking for one reef aquarium. After setup you can configure habitat, problem, and inventory via Lovelace or services."
+      }
+    },
+    "abort": {
+      "already_configured": "Reef Tank Tracker is already set up. It supports a single tank per HA instance."
+    }
+  }
+}

@@ -1,0 +1,180 @@
+"""Reef Tank Tracker — top-level integration setup.
+
+Single-instance integration. The config flow creates one entry; on
+async_setup_entry we:
+  - load persistent state via ReefDataCoordinator
+  - register services (record_reading, add_inventory, set_habitat, ...)
+  - forward to sensor and number platforms
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, ServiceCall
+import homeassistant.helpers.config_validation as cv
+
+from .const import (
+    DOMAIN,
+    HABITATS,
+    PROBLEMS,
+    INVENTORY_CATEGORIES,
+    SERVICE_ADD_INVENTORY,
+    SERVICE_IMPORT_ICP,
+    SERVICE_RECORD_READING,
+    SERVICE_REMOVE_INVENTORY,
+    SERVICE_SET_HABITAT,
+    SOURCE_AUTO,
+    SOURCE_ICP,
+    SOURCE_MANUAL,
+)
+from .coordinator import ReefDataCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS = ["sensor", "number"]
+
+
+# ---------------------------------------------------------------------------
+# Service schemas
+# ---------------------------------------------------------------------------
+RECORD_READING_SCHEMA = vol.Schema({
+    vol.Required("parameter"): cv.string,
+    vol.Required("value"): vol.Coerce(float),
+    vol.Optional("unit"): cv.string,
+    vol.Optional("method"): cv.string,
+    vol.Optional("source", default=SOURCE_MANUAL): vol.In(
+        [SOURCE_MANUAL, SOURCE_AUTO, SOURCE_ICP]
+    ),
+    vol.Optional("sample_taken_at"): cv.string,
+    vol.Optional("test_id"): cv.string,
+    vol.Optional("notes"): cv.string,
+})
+
+ADD_INVENTORY_SCHEMA = vol.Schema({
+    vol.Required("name"): cv.string,
+    vol.Required("category"): vol.In(INVENTORY_CATEGORIES),
+    vol.Optional("type"): cv.string,
+    vol.Optional("added_at"): cv.string,
+    vol.Optional("count", default=1): vol.Coerce(int),
+    vol.Optional("notes"): cv.string,
+    vol.Optional("photo"): cv.string,
+})
+
+REMOVE_INVENTORY_SCHEMA = vol.Schema({
+    vol.Required("id"): cv.string,
+    vol.Optional("removed_at"): cv.string,
+})
+
+SET_HABITAT_SCHEMA = vol.Schema({
+    vol.Optional("habitat"): vol.In(HABITATS),
+    vol.Optional("problem"): vol.In(PROBLEMS),
+})
+
+IMPORT_ICP_SCHEMA = vol.Schema({
+    vol.Required("test_record"): dict,
+})
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """No yaml configuration; setup happens via config entry."""
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up the integration from a config entry."""
+    hass.data.setdefault(DOMAIN, {})
+
+    coordinator = ReefDataCoordinator(hass)
+    await coordinator.async_load()
+    hass.data[DOMAIN][entry.entry_id] = coordinator
+
+    # Register services. They're registered on the first entry only —
+    # since we're single-instance, that's a non-issue.
+    await _async_register_services(hass, coordinator)
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        if not hass.data[DOMAIN]:
+            for service in (
+                SERVICE_RECORD_READING, SERVICE_ADD_INVENTORY,
+                SERVICE_REMOVE_INVENTORY, SERVICE_SET_HABITAT,
+                SERVICE_IMPORT_ICP,
+            ):
+                hass.services.async_remove(DOMAIN, service)
+    return unloaded
+
+
+async def _async_register_services(
+    hass: HomeAssistant, coordinator: ReefDataCoordinator
+) -> None:
+    """Register service handlers. Idempotent."""
+
+    async def handle_record_reading(call: ServiceCall) -> None:
+        await coordinator.async_record_reading(
+            parameter=call.data["parameter"],
+            value=call.data["value"],
+            unit=call.data.get("unit"),
+            method=call.data.get("method"),
+            source=call.data["source"],
+            sample_taken_at=call.data.get("sample_taken_at"),
+            test_id=call.data.get("test_id"),
+            notes=call.data.get("notes"),
+        )
+
+    async def handle_add_inventory(call: ServiceCall) -> None:
+        await coordinator.async_add_inventory(
+            category=call.data["category"],
+            name=call.data["name"],
+            type=call.data.get("type"),
+            added_at=call.data.get("added_at"),
+            count=call.data.get("count", 1),
+            notes=call.data.get("notes"),
+            photo=call.data.get("photo"),
+        )
+
+    async def handle_remove_inventory(call: ServiceCall) -> None:
+        await coordinator.async_remove_inventory(
+            entry_id=call.data["id"],
+            removed_at=call.data.get("removed_at"),
+        )
+
+    async def handle_set_habitat(call: ServiceCall) -> None:
+        await coordinator.async_set_habitat(
+            habitat=call.data.get("habitat"),
+            problem=call.data.get("problem"),
+        )
+
+    async def handle_import_icp(call: ServiceCall) -> None:
+        await coordinator.async_record_icp_test(call.data["test_record"])
+
+    if not hass.services.has_service(DOMAIN, SERVICE_RECORD_READING):
+        hass.services.async_register(
+            DOMAIN, SERVICE_RECORD_READING, handle_record_reading,
+            schema=RECORD_READING_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_ADD_INVENTORY, handle_add_inventory,
+            schema=ADD_INVENTORY_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_REMOVE_INVENTORY, handle_remove_inventory,
+            schema=REMOVE_INVENTORY_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SET_HABITAT, handle_set_habitat,
+            schema=SET_HABITAT_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_IMPORT_ICP, handle_import_icp,
+            schema=IMPORT_ICP_SCHEMA,
+        )

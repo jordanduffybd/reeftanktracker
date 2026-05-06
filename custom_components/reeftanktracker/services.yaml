@@ -1,0 +1,182 @@
+record_reading:
+  name: Record Reading
+  description: >
+    Log a parameter reading. Manual entries default to source=manual and
+    sample_taken_at=now. ICP imports use source=icp with the canonical
+    sample date from the lab report.
+  fields:
+    parameter:
+      name: Parameter
+      description: Parameter id (e.g. kh, calcium, phosphate).
+      required: true
+      example: kh
+      selector:
+        text:
+    value:
+      name: Value
+      description: Numeric value in the parameter's unit.
+      required: true
+      example: 8.4
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: 0.001
+    unit:
+      name: Unit
+      description: Override the parameter's default unit.
+      example: dKH
+      selector:
+        text:
+    method:
+      name: Method
+      description: Test method label (e.g. Hanna ULR, Salifert, Triton ICP).
+      example: Hanna ULR
+      selector:
+        text:
+    source:
+      name: Source
+      description: Origin of the reading.
+      default: manual
+      selector:
+        select:
+          options:
+            - manual
+            - auto
+            - icp
+    sample_taken_at:
+      name: Sample taken at
+      description: >
+        ISO 8601 timestamp of when the water was sampled. Defaults to now.
+        For ICP imports, use the lab's sample date — not when results landed.
+      example: "2026-04-01T08:30:00+10:00"
+      selector:
+        text:
+    test_id:
+      name: Test ID
+      description: Optional reference to an ICP test (e.g. Triton report ID).
+      example: B-KJAZM8
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Free-form notes attached to the reading.
+      selector:
+        text:
+          multiline: true
+
+add_inventory:
+  name: Add Inventory Item
+  description: Add a coral, fish, invert, or other inhabitant to the tank registry.
+  fields:
+    name:
+      name: Name
+      required: true
+      example: "Acropora millepora"
+      selector:
+        text:
+    category:
+      name: Category
+      required: true
+      selector:
+        select:
+          options:
+            - coral
+            - fish
+            - invertebrate
+            - clam
+            - anemone
+            - macroalgae
+            - other
+    type:
+      name: Type
+      description: Sub-category (SPS / LPS / Soft, Tang, Clownfish, etc.).
+      example: SPS
+      selector:
+        text:
+    added_at:
+      name: Added at
+      description: Date added (YYYY-MM-DD). Defaults to today.
+      example: "2024-08-15"
+      selector:
+        text:
+    count:
+      name: Count
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 1000
+          step: 1
+    notes:
+      name: Notes
+      selector:
+        text:
+          multiline: true
+    photo:
+      name: Photo URL
+      description: Optional URL or /local/ path to a photo.
+      selector:
+        text:
+
+remove_inventory:
+  name: Remove Inventory Item
+  description: Mark an inventory entry as removed (does not delete history).
+  fields:
+    id:
+      name: Entry ID
+      required: true
+      selector:
+        text:
+    removed_at:
+      name: Removed at
+      description: Date removed (YYYY-MM-DD). Defaults to today.
+      selector:
+        text:
+
+set_habitat:
+  name: Set Habitat / Problem
+  description: Update the tank's current habitat classification or problem flag.
+  fields:
+    habitat:
+      name: Habitat
+      selector:
+        select:
+          options:
+            - SPS Outer Reef
+            - SPS Inner Reef
+            - Mixed Reef
+            - LPS Dominant
+            - Soft Coral Dominant
+            - Reef Aquarium with Clam
+            - Fish Only
+            - NPS (Filter Feeders)
+            - Seagrass
+    problem:
+      name: Problem
+      selector:
+        select:
+          options:
+            - None
+            - Cyanobacteria
+            - RTN
+            - STN
+            - Poor growth
+            - Poor colour
+            - Mortality
+            - Nuisance Algae
+
+import_icp:
+  name: Import ICP Test
+  description: >
+    Stash a full ICP test record into the tank's history. Normally
+    invoked by the icpimport companion integration; you wouldn't call
+    this manually.
+  fields:
+    test_record:
+      name: Test record
+      required: true
+      description: Full JSON test record (test_id, sample_date, elements, matrix, ...).
+      selector:
+        object:
