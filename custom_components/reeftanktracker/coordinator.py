@@ -42,8 +42,14 @@ except ImportError:  # pragma: no cover
 
 from .const import (
     DOMAIN,
+    EVENT_ADVISOR_ACKNOWLEDGED,
+    EVENT_ADVISOR_DISMISSED,
+    EVENT_ADVISOR_SNAPSHOT_CAPTURED,
+    EVENT_DEMAND_CHANGE_LOGGED,
+    EVENT_WATER_CHANGE_LOGGED,
     HABITATS,
     PROBLEMS,
+    SIGNAL_ADVISOR_FORM_CHANGED,
     SIGNAL_ADVISOR_UPDATED,
     SIGNAL_HABITAT_CHANGED,
     SIGNAL_INVENTORY_CHANGED,
@@ -61,6 +67,29 @@ _LOGGER = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
+
+
+def _try_log_to_logbook(
+    hass: HomeAssistant, name: str, message: str, entity_id: str | None,
+) -> None:
+    """Best-effort logbook entry via the public `logbook_entry` event.
+
+    The logbook component listens for this event and renders a
+    chronological entry visible at /logbook. We fire the event rather
+    than calling logbook's helper API directly because the helper's
+    import path has shifted across HA versions; the event is stable.
+    """
+    try:
+        payload: dict[str, Any] = {
+            "name": name,
+            "message": message,
+            "domain": DOMAIN,
+        }
+        if entity_id:
+            payload["entity_id"] = entity_id
+        hass.bus.async_fire("logbook_entry", payload)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _slugify(label: str) -> str:
@@ -180,6 +209,16 @@ class ReefDataCoordinator:
                     "demand_changes": [],    # [{at, reason, expected_direction, magnitude_hint_pct}]
                     "water_changes": [],     # [{at, percent, salt_mix_kh, notes}]
                 },
+                # Persisted state of the dashboard's inline form fields,
+                # so values survive HA restarts and dashboard reloads.
+                "form": {
+                    "wc_percent": 10.0,
+                    "wc_salt_mix_kh": None,
+                    "wc_notes": "",
+                    "demand_reason": "",
+                    "demand_direction": "unknown",
+                    "demand_magnitude_pct": None,
+                },
             },
             # User-added supplement profiles. Builtins live in
             # alk_advisor.BUILTIN_PROFILES; these merge on top at runtime.
@@ -297,6 +336,34 @@ class ReefDataCoordinator:
         self._import_statistic(reading)
         async_dispatcher_send(self.hass, SIGNAL_READING_RECORDED, parameter)
         return reading
+
+    def _resolve_advisor_entity_id(self) -> str | None:
+        """Find the actual entity_id for the alk advisor sensor in the
+        registry. Used so logbook entries about user actions link to
+        the sensor's history view."""
+        try:
+            registry = er.async_get(self.hass)
+        except Exception:  # noqa: BLE001
+            return None
+        target_uid = "reef_alk_advisor_recommendation"
+        for entry in registry.entities.values():
+            if entry.platform == DOMAIN and entry.unique_id == target_uid:
+                return entry.entity_id
+        return None
+
+    def _emit_advisor_event(
+        self, event_name: str, message: str, payload: dict[str, Any],
+    ) -> None:
+        """Fire an event-bus event AND log a logbook entry for a user-
+        initiated advisor action. Both happen best-effort — failures are
+        swallowed so a logbook hiccup never blocks the underlying state
+        update."""
+        advisor_eid = self._resolve_advisor_entity_id()
+        _try_log_to_logbook(self.hass, "Alk Advisor", message, advisor_eid)
+        try:
+            self.hass.bus.async_fire(event_name, payload)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _resolve_latest_entity_id(self, parameter: str) -> str | None:
         """Find the actual entity_id for `sensor.<...>_latest` in the
@@ -570,36 +637,58 @@ class ReefDataCoordinator:
     ) -> None:
         """Append a daily snapshot. Caps history at 90 entries (rolling)."""
         blob = self._advisor_blob(param_id)
-        blob["snapshots"].append({"at": at, "kh": kh, "dose_mL": dose_mL})
+        entry = {"at": at, "kh": kh, "dose_mL": dose_mL}
+        blob["snapshots"].append(entry)
         # Keep ~3 months — the algorithm only looks at `window_days`
         # but extra history is cheap and useful for diagnostics.
         if len(blob["snapshots"]) > 90:
             blob["snapshots"] = blob["snapshots"][-90:]
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        # Bus event only — daily cadence would clutter the logbook.
+        try:
+            self.hass.bus.async_fire(
+                EVENT_ADVISOR_SNAPSHOT_CAPTURED,
+                {"parameter": param_id, **entry},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     async def async_record_advisor_acknowledgment(
         self, param_id: str, *, applied_value_mL: float, prev_value_mL: float,
     ) -> None:
         blob = self._advisor_blob(param_id)
-        blob["acknowledgments"].append({
+        entry = {
             "at": _now_iso(),
             "applied_value_mL": float(applied_value_mL),
             "prev_value_mL": float(prev_value_mL),
-        })
+        }
+        blob["acknowledgments"].append(entry)
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        self._emit_advisor_event(
+            EVENT_ADVISOR_ACKNOWLEDGED,
+            f"Acknowledged: applied {applied_value_mL} mL/day "
+            f"(was {prev_value_mL} mL/day)",
+            {"parameter": param_id, **entry},
+        )
 
     async def async_record_advisor_dismissal(
         self, param_id: str, *, suggested_value_mL: float,
     ) -> None:
         blob = self._advisor_blob(param_id)
-        blob["dismissals"].append({
+        entry = {
             "at": _now_iso(),
             "suggested_value_mL": float(suggested_value_mL),
-        })
+        }
+        blob["dismissals"].append(entry)
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        self._emit_advisor_event(
+            EVENT_ADVISOR_DISMISSED,
+            f"Dismissed suggestion of {suggested_value_mL} mL/day",
+            {"parameter": param_id, **entry},
+        )
 
     async def async_record_advisor_demand_change(
         self, param_id: str, *, reason: str,
@@ -607,28 +696,48 @@ class ReefDataCoordinator:
         magnitude_hint_pct: float | None = None,
     ) -> None:
         blob = self._advisor_blob(param_id)
-        blob["demand_changes"].append({
+        entry = {
             "at": _now_iso(),
             "reason": reason,
             "expected_direction": expected_direction,
             "magnitude_hint_pct": magnitude_hint_pct,
-        })
+        }
+        blob["demand_changes"].append(entry)
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        msg = f"Demand change: {reason!r} (expected {expected_direction})"
+        if magnitude_hint_pct is not None:
+            msg += f", hint {magnitude_hint_pct:.0f}%"
+        self._emit_advisor_event(
+            EVENT_DEMAND_CHANGE_LOGGED,
+            msg,
+            {"parameter": param_id, **entry},
+        )
 
     async def async_record_water_change(
         self, param_id: str, *, percent: float,
         salt_mix_kh: float | None = None, notes: str | None = None,
     ) -> None:
         blob = self._advisor_blob(param_id)
-        blob["water_changes"].append({
+        entry = {
             "at": _now_iso(),
             "percent": float(percent),
             "salt_mix_kh": float(salt_mix_kh) if salt_mix_kh is not None else None,
             "notes": notes,
-        })
+        }
+        blob["water_changes"].append(entry)
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        msg = f"Water change logged: {percent:.1f}%"
+        if salt_mix_kh is not None:
+            msg += f" (salt mix KH {salt_mix_kh:.2f} dKH)"
+        if notes:
+            msg += f" — {notes}"
+        self._emit_advisor_event(
+            EVENT_WATER_CHANGE_LOGGED,
+            msg,
+            {"parameter": param_id, **entry},
+        )
 
     # ------------------------------------------------------------------
     # Supplement profiles (user-managed; merge with alk_advisor builtins)
@@ -668,3 +777,33 @@ class ReefDataCoordinator:
                 async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, "kh")
                 return
         raise ValueError(f"Supplement profile not found: {profile_id}")
+
+    # ------------------------------------------------------------------
+    # Advisor form state — persists the dashboard inline-form values so
+    # the user's typed inputs survive reloads.
+    # ------------------------------------------------------------------
+    def _form_blob(self) -> dict[str, Any]:
+        advisor = self._data.setdefault("advisor", {})
+        form = advisor.setdefault("form", {})
+        # Backfill defaults for any missing keys (handles upgrades).
+        form.setdefault("wc_percent", 10.0)
+        form.setdefault("wc_salt_mix_kh", None)
+        form.setdefault("wc_notes", "")
+        form.setdefault("demand_reason", "")
+        form.setdefault("demand_direction", "unknown")
+        form.setdefault("demand_magnitude_pct", None)
+        return form
+
+    def advisor_form_value(self, key: str) -> Any:
+        return self._form_blob().get(key)
+
+    async def async_set_advisor_form_value(self, key: str, value: Any) -> None:
+        # Always persist, even if the new value matches in-memory. An
+        # earlier same-value early-return was masking a bug where
+        # in-memory state drifted from disk (a service call would no-op
+        # because the in-memory form had the right value but the file
+        # didn't). Save is cheap; correctness wins.
+        form = self._form_blob()
+        form[key] = value
+        await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_FORM_CHANGED, key)

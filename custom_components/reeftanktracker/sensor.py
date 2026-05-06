@@ -342,7 +342,9 @@ class AlkAdvisorSensor(SensorEntity):
     _attr_device_info = _device_info()
     _attr_native_unit_of_measurement = "mL"
     _attr_icon = "mdi:test-tube"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # NOT diagnostic — the suggested daily dose is the headline output
+    # the user actually acts on. Marking it diagnostic hid it from
+    # HA's Activity-panel entity filter and the device entity tree.
     _attr_unique_id = "reef_alk_advisor_recommendation"
     _attr_name = "Alk Advisor Recommendation"
 

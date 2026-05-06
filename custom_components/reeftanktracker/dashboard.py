@@ -610,6 +610,12 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
     # Action buttons — call services. We don't pre-fill the values; the
     # user enters their own in the developer-tools-style call dialog
     # the button selector opens.
+    # Only Acknowledge / Dismiss are inline buttons — they auto-fill
+    # from the current recommendation so a no-payload click works.
+    # Log demand change / Log water change need free-text + numeric
+    # input that HA's `call-service` entity row can't capture, so those
+    # are surfaced as links into Developer Tools → Services where the
+    # user gets a real form. See `help_card` below.
     actions_card = {
         "type": "entities",
         "title": "Actions",
@@ -631,42 +637,82 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                 "service": "reeftanktracker.dismiss_alk_recommendation",
                 "service_data": {},
             },
+        ],
+    }
+
+    # Inline form: log a water change. The form fields are real entities
+    # owned by this integration (number/text), so the user types into them
+    # right on the dashboard. The submit button calls the service with
+    # values resolved from those entities at click time via templates.
+    wc_percent_eid = _eid(uid_map, "reef_advisor_form_wc_percent", "number")
+    wc_salt_kh_eid = _eid(uid_map, "reef_advisor_form_wc_salt_mix_kh", "number")
+    wc_notes_eid = _eid(uid_map, "reef_advisor_form_wc_notes", "text")
+    water_change_form = {
+        "type": "entities",
+        "title": "Log water change",
+        "show_header_toggle": False,
+        "entities": [
+            {"entity": wc_percent_eid, "name": "Percent volume changed (%)"},
+            {"entity": wc_salt_kh_eid, "name": "Salt mix KH (dKH, optional)"},
+            {"entity": wc_notes_eid, "name": "Notes (optional)"},
             {
+                # The form-submit service reads each form entity's
+                # state on the server side and forwards to
+                # log_water_change. We can't put templates in
+                # service_data here because HA's `entities` card
+                # `call-service` row doesn't render them.
                 "type": "call-service",
-                "name": "Log demand change — corals added/removed",
-                "icon": "mdi:swap-vertical",
-                "action_name": "Log",
-                "service": "reeftanktracker.log_demand_change",
-                "service_data": {"reason": ""},
-            },
-            {
-                "type": "call-service",
-                "name": "Log water change",
+                "name": "Submit water change",
                 "icon": "mdi:water-sync",
                 "action_name": "Log",
-                "service": "reeftanktracker.log_water_change",
-                "service_data": {"percent": 10.0},
+                "service": "reeftanktracker.submit_water_change_form",
+                "service_data": {},
             },
         ],
     }
 
+    # Inline form: log a demand change.
+    demand_reason_eid = _eid(uid_map, "reef_advisor_form_demand_reason", "text")
+    demand_dir_eid = _eid(uid_map, "reef_advisor_form_demand_direction", "select")
+    demand_mag_eid = _eid(uid_map, "reef_advisor_form_demand_magnitude_pct", "number")
+    demand_change_form = {
+        "type": "entities",
+        "title": "Log demand change",
+        "show_header_toggle": False,
+        "entities": [
+            {"entity": demand_reason_eid, "name": "Reason (e.g. added 3 SPS frags)"},
+            {"entity": demand_dir_eid, "name": "Expected direction"},
+            {"entity": demand_mag_eid, "name": "Magnitude hint (%, optional)"},
+            {
+                "type": "call-service",
+                "name": "Submit demand change",
+                "icon": "mdi:swap-vertical",
+                "action_name": "Log",
+                "service": "reeftanktracker.submit_demand_change_form",
+                "service_data": {},
+            },
+        ],
+    }
+
+    # Admin-only ops (capture snapshot, supplement profile CRUD) stay in
+    # Developer Tools — they're rare and varied enough that the dev-tools
+    # form is fine. Markdown card explains.
     help_card = {
         "type": "markdown",
         "content": (
-            "**Custom supplements:** add via Developer Tools → "
-            "`reeftanktracker.add_supplement_profile`. List with "
-            "`reeftanktracker.list_supplement_profiles` (logs at WARNING).\n\n"
-            "**Water changes:** log via the button above or "
-            "`reeftanktracker.log_water_change`. Snapshots within "
-            "the settling window after a water change are excluded "
-            "from the slope/median calculation; the rolling window "
-            "is otherwise unchanged.\n\n"
+            "**Custom supplements** and **manual snapshots** are managed "
+            "from Settings → Developer Tools → Actions. Search for "
+            "`reeftanktracker` to find:\n\n"
+            "- `add_supplement_profile` / `list_supplement_profiles` / "
+            "`remove_supplement_profile`\n"
+            "- `capture_snapshot_now` (manual baseline, e.g. after "
+            "calibrating the KH Keeper)\n\n"
             "**Observed vs spec:** when you acknowledge a dose change, "
             "the advisor estimates the supplement's actual potency from "
             "before/after slope. If it drifts more than the configured "
             "threshold from spec, you'll see `spec_drift_warning: true` "
-            "and a note in the reason text — consider switching to a "
-            "Custom profile with the observed value if it persists."
+            "and a note in the reason — consider switching to a Custom "
+            "profile with the observed value if it persists."
         ),
     }
 
@@ -698,7 +744,25 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
             },
             {
                 "type": "grid",
-                "column_span": 3,
+                "column_span": 1,
+                "cards": [
+                    {"type": "heading", "heading": "Water change",
+                     "icon": "mdi:water-sync"},
+                    water_change_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [
+                    {"type": "heading", "heading": "Demand change",
+                     "icon": "mdi:swap-vertical"},
+                    demand_change_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
                 "cards": [help_card],
             },
         ],

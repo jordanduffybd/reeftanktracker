@@ -55,11 +55,14 @@ from .const import (
     SERVICE_REMOVE_SUPPLEMENT_PROFILE,
     SERVICE_LIST_SUPPLEMENT_PROFILES,
     SERVICE_LOG_WATER_CHANGE,
+    SERVICE_CAPTURE_SNAPSHOT,
+    SERVICE_SUBMIT_WC_FORM,
+    SERVICE_SUBMIT_DEMAND_FORM,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "number", "select"]
+PLATFORMS = ["sensor", "number", "select", "text"]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -106,7 +109,11 @@ IMPORT_ICP_SCHEMA = vol.Schema({
 })
 
 ACK_ALK_SCHEMA = vol.Schema({
-    vol.Required("applied_value_mL"): vol.Coerce(float),
+    # Both optional so the dashboard "Acknowledge" button can fire with
+    # no payload — handler infers `applied_value_mL` from the current
+    # advisor recommendation, and `prev_value_mL` from the latest
+    # snapshot's dose. Pass either explicitly to override.
+    vol.Optional("applied_value_mL"): vol.Coerce(float),
     vol.Optional("prev_value_mL"): vol.Coerce(float),
 })
 
@@ -145,6 +152,14 @@ LOG_WATER_CHANGE_SCHEMA = vol.Schema({
     ),
     vol.Optional("salt_mix_kh"): vol.Coerce(float),
     vol.Optional("notes"): cv.string,
+})
+
+CAPTURE_SNAPSHOT_SCHEMA = vol.Schema({
+    # All optional. With no args, reads current live state and stamps "now".
+    # Override `at` to seed historical snapshots (useful for dev testing).
+    vol.Optional("at"): cv.string,
+    vol.Optional("kh"): vol.Coerce(float),
+    vol.Optional("dose_mL"): vol.Coerce(float),
 })
 
 
@@ -248,6 +263,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_REMOVE_SUPPLEMENT_PROFILE,
                 SERVICE_LIST_SUPPLEMENT_PROFILES,
                 SERVICE_LOG_WATER_CHANGE,
+                SERVICE_CAPTURE_SNAPSHOT,
+                SERVICE_SUBMIT_WC_FORM,
+                SERVICE_SUBMIT_DEMAND_FORM,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -312,20 +330,55 @@ async def _async_register_services(
         await diagnose_dashboard(hass, coordinator)
 
     async def handle_ack_alk(call: ServiceCall) -> None:
-        applied = float(call.data["applied_value_mL"])
+        applied = call.data.get("applied_value_mL")
         prev = call.data.get("prev_value_mL")
+
+        # Both values can be inferred when the user invokes this from
+        # the dashboard's no-payload Acknowledge button. The intent is
+        # "I applied the current suggestion", so:
+        #   - applied = current `suggested_dose_mL`
+        #   - prev    = the live programmed dose right now (sum of
+        #               daily_dose across configured alk heads), since
+        #               that's what the user just bumped FROM.
+        from .alk_advisor import (
+            OPT_ALK_HEADS, _opt, _sum_dose_mL, compute_for_entity,
+        )
+
+        if applied is None:
+            rec = compute_for_entity(hass, coordinator)
+            if rec is not None and rec.suggested_dose_mL is not None:
+                applied = float(rec.suggested_dose_mL)
+            else:
+                _LOGGER.warning(
+                    "acknowledge_alk_recommendation called with no "
+                    "applied_value_mL and no current recommendation to "
+                    "infer from — recording 0.0",
+                )
+                applied = 0.0
+
         if prev is None:
-            # If the user didn't tell us their previous dose, infer from
-            # the last persisted snapshot. This is best-effort.
-            snaps = coordinator.advisor_snapshots("kh")
-            for s in reversed(snaps):
-                if s.get("dose_mL") is not None:
-                    prev = float(s["dose_mL"])
-                    break
+            live = _sum_dose_mL(
+                hass, list(_opt(coordinator, OPT_ALK_HEADS) or []),
+            )
+            if live is not None:
+                prev = float(live)
+            else:
+                # Last-resort fallback: latest snapshot dose. This is what
+                # the previous version did. Only happens when the alk
+                # heads aren't readable for some reason.
+                for s in reversed(coordinator.advisor_snapshots("kh")):
+                    if s.get("dose_mL") is not None:
+                        prev = float(s["dose_mL"])
+                        break
+
         await coordinator.async_record_advisor_acknowledgment(
             "kh",
-            applied_value_mL=applied,
+            applied_value_mL=float(applied),
             prev_value_mL=float(prev) if prev is not None else 0.0,
+        )
+        _LOGGER.warning(
+            "Acknowledged alk recommendation: applied=%s prev=%s",
+            applied, prev,
         )
 
     async def handle_dismiss_alk(call: ServiceCall) -> None:
@@ -350,9 +403,10 @@ async def _async_register_services(
             notes=call.data.get("notes"),
         )
         _LOGGER.warning(
-            "Added supplement profile id=%s label=%r eff=%s patterns=%s",
+            "Added supplement profile id=%s label=%r eff=%s patterns=%s notes=%r",
             entry["id"], entry["label"],
-            entry["eff_dkh_per_mL_per_100L"], entry["label_patterns"],
+            entry["eff_dkh_per_mL_per_100L"],
+            entry["label_patterns"], entry.get("notes"),
         )
 
     async def handle_remove_supplement_profile(call: ServiceCall) -> None:
@@ -364,13 +418,22 @@ async def _async_register_services(
         # into the top of __init__.py.
         from .alk_advisor import all_profiles
         merged = all_profiles(coordinator)
-        user_ids = {p["id"] for p in coordinator.supplement_profiles}
+        # Index user profiles by id so we can pull patterns/notes for the listing.
+        user_by_id = {p["id"]: p for p in coordinator.supplement_profiles}
         lines = ["Supplement profiles (BUILTIN unless tagged USER):"]
         for pid, prof in merged.items():
-            tag = "USER" if pid in user_ids else "BUILTIN"
+            tag = "USER" if pid in user_by_id else "BUILTIN"
             eff = prof["eff_dkh_per_mL_per_100L"]
             eff_s = f"{eff} dKH/mL/100L" if eff is not None else "(sentinel)"
-            lines.append(f"  [{tag}] {pid} — {prof['label']} — {eff_s}")
+            line = f"  [{tag}] {pid} — {prof['label']} — {eff_s}"
+            if pid in user_by_id:
+                u = user_by_id[pid]
+                pats = u.get("label_patterns") or []
+                if pats:
+                    line += f"  patterns={pats}"
+                if u.get("notes"):
+                    line += f"  notes={u['notes']!r}"
+            lines.append(line)
         _LOGGER.warning("\n".join(lines))
 
     async def handle_log_water_change(call: ServiceCall) -> None:
@@ -379,6 +442,95 @@ async def _async_register_services(
             percent=call.data["percent"],
             salt_mix_kh=call.data.get("salt_mix_kh"),
             notes=call.data.get("notes"),
+        )
+
+    async def handle_submit_water_change_form(call: ServiceCall) -> None:
+        """Read the dashboard's water-change form fields and call
+        log_water_change. The dashboard's "Submit" button invokes this
+        with no payload — HA's `entities` card `call-service` rows
+        don't render templates in service_data, so the values have to
+        be read here at call time."""
+        percent = coordinator.advisor_form_value("wc_percent") or 10.0
+        salt = coordinator.advisor_form_value("wc_salt_mix_kh")
+        notes = coordinator.advisor_form_value("wc_notes") or None
+        if isinstance(notes, str) and not notes.strip():
+            notes = None
+        await coordinator.async_record_water_change(
+            "kh",
+            percent=float(percent),
+            salt_mix_kh=float(salt) if salt is not None else None,
+            notes=notes,
+        )
+        _LOGGER.warning(
+            "Submitted water change from form: percent=%s salt_mix_kh=%s notes=%r",
+            percent, salt, notes,
+        )
+
+    async def handle_submit_demand_change_form(call: ServiceCall) -> None:
+        """Read the demand-change form fields and call log_demand_change."""
+        reason = coordinator.advisor_form_value("demand_reason") or ""
+        direction = coordinator.advisor_form_value("demand_direction") or "unknown"
+        if direction not in ("increase", "decrease", "unknown"):
+            direction = "unknown"
+        magnitude = coordinator.advisor_form_value("demand_magnitude_pct")
+        if isinstance(reason, str) and not reason.strip():
+            _LOGGER.warning(
+                "submit_demand_change_form called with empty reason — "
+                "recording with placeholder text",
+            )
+            reason = "(no reason provided)"
+        await coordinator.async_record_advisor_demand_change(
+            "kh",
+            reason=str(reason),
+            expected_direction=str(direction),
+            magnitude_hint_pct=(
+                float(magnitude) if magnitude is not None else None
+            ),
+        )
+        _LOGGER.warning(
+            "Submitted demand change from form: reason=%r direction=%s magnitude=%s",
+            reason, direction, magnitude,
+        )
+
+    async def handle_capture_snapshot(call: ServiceCall) -> None:
+        """Capture an alk advisor snapshot.
+
+        With no args: reads `kh_source` and sums dose across the
+        configured alk heads, stamps with current time. Useful in prod
+        for manual baselines (e.g. after calibrating the KH Keeper).
+
+        With overrides: persists exactly what you pass. Useful in dev
+        to seed synthetic history so the algorithm has enough data to
+        produce a recommendation immediately.
+        """
+        from .alk_advisor import (
+            OPT_ALK_HEADS, OPT_KH_SOURCE,
+            _opt, _read_float_state, _sum_dose_mL,
+        )
+        from datetime import datetime, timezone
+
+        at = call.data.get("at") or (
+            datetime.now(timezone.utc).astimezone().isoformat()
+        )
+
+        if "kh" in call.data:
+            kh: float | None = float(call.data["kh"])
+        else:
+            kh = _read_float_state(hass, _opt(coordinator, OPT_KH_SOURCE) or "")
+
+        if "dose_mL" in call.data:
+            dose_mL: float | None = float(call.data["dose_mL"])
+        else:
+            dose_mL = _sum_dose_mL(
+                hass, list(_opt(coordinator, OPT_ALK_HEADS) or []),
+            )
+
+        await coordinator.async_record_advisor_snapshot(
+            "kh", at=at, kh=kh, dose_mL=dose_mL,
+        )
+        _LOGGER.warning(
+            "Captured alk snapshot: at=%s kh=%s dose_mL=%s",
+            at, kh, dose_mL,
         )
 
     if not hass.services.has_service(DOMAIN, SERVICE_RECORD_READING):
@@ -438,4 +590,14 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_LOG_WATER_CHANGE, handle_log_water_change,
             schema=LOG_WATER_CHANGE_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_CAPTURE_SNAPSHOT, handle_capture_snapshot,
+            schema=CAPTURE_SNAPSHOT_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_WC_FORM, handle_submit_water_change_form,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_DEMAND_FORM, handle_submit_demand_change_form,
         )

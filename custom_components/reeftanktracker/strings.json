@@ -12,7 +12,7 @@
   },
   "options": {
     "step": {
-      "menu": {
+      "init": {
         "title": "Reef Tank Tracker — Options",
         "description": "Pick a section to edit.",
         "menu_options": {

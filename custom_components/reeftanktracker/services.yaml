@@ -398,6 +398,47 @@ list_supplement_profiles:
     additions) at WARNING. Use this to find a profile id before calling
     remove_supplement_profile. Output appears in the HA log.
 
+capture_snapshot_now:
+  name: Capture Alk Snapshot Now
+  description: >
+    Capture an alk advisor snapshot. With no arguments, reads the
+    current state of the configured KH source and alk heads, stamping
+    "now" — useful in prod for a manual baseline (e.g. right after
+    calibrating the KH Keeper). With override arguments, persists
+    exactly what you pass — useful for seeding synthetic history while
+    testing the advisor in a dev instance.
+  fields:
+    at:
+      name: Snapshot timestamp (ISO 8601)
+      description: >
+        Override the timestamp. Defaults to now. Use this to seed
+        historical snapshots when testing.
+      example: "2026-04-30T23:55:00+10:00"
+      selector:
+        text:
+    kh:
+      name: KH (dKH)
+      description: Override the KH value. Defaults to current state of `kh_source`.
+      example: 9.08
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 20
+          step: 0.01
+    dose_mL:
+      name: Daily dose (mL)
+      description: >
+        Override the alk dose. Defaults to the sum of `daily_dose`
+        across the configured alk heads.
+      example: 3.0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+
 log_water_change:
   name: Log Water Change
   description: >

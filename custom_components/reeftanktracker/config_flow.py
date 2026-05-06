@@ -79,14 +79,15 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Landing page — pick which sub-section to edit."""
-        return await self.async_step_menu()
+        """Landing page — pick which sub-section to edit.
 
-    async def async_step_menu(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+        HA's translation system looks up `options.step.init.menu_options`
+        regardless of what this step returns. Keep `init` as the menu
+        step itself (rather than redirecting to a separate `menu` step)
+        so the labels resolve.
+        """
         return self.async_show_menu(
-            step_id="menu",
+            step_id="init",
             menu_options=["sources", "advisor"],
         )
 
@@ -165,14 +166,33 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
 
         schema_dict: dict[Any, Any] = {
             vol.Optional(OPT.OPT_ADVISOR_ENABLED): BooleanSelector(),
+            # Alk-head daily-dose sensors are domain=sensor with
+            # device_class=volume (Reefbeat publishes them with mL units
+            # + volume class). Filtering keeps the dropdown to actual
+            # dose-like sensors instead of hundreds of unrelated entities.
             vol.Optional(OPT.OPT_ALK_HEADS): EntitySelector(
-                EntitySelectorConfig(domain=["sensor"], multiple=True),
+                EntitySelectorConfig(
+                    domain=["sensor"],
+                    device_class=["volume"],
+                    multiple=True,
+                ),
             ),
+            # KH Keeper publishes `sensor.kh_keeper_kh` with no specific
+            # device_class. Best filter: numeric sensor — but HA's
+            # selector doesn't have a "numeric" filter, so leave domain
+            # = sensor + input_number (input_number is also valid for
+            # users who want to back the advisor with a manually-set
+            # helper).
             vol.Optional(OPT.OPT_KH_SOURCE): EntitySelector(
                 EntitySelectorConfig(domain=["sensor", "input_number"]),
             ),
+            # Calibration warning is a binary_sensor with
+            # device_class=problem from KH Keeper.
             vol.Optional(OPT.OPT_CALIBRATION_WARNING_ENTITY): EntitySelector(
-                EntitySelectorConfig(domain=["binary_sensor"]),
+                EntitySelectorConfig(
+                    domain=["binary_sensor"],
+                    device_class=["problem"],
+                ),
             ),
             vol.Optional(OPT.OPT_TANK_VOLUME_L): _num(
                 OPT.OPT_TANK_VOLUME_L, mn=10, mx=10000, step=1,

@@ -22,6 +22,7 @@ from .const import (
     DOMAIN,
     HABITATS,
     PROBLEMS,
+    SIGNAL_ADVISOR_FORM_CHANGED,
     SIGNAL_HABITAT_CHANGED,
     TEST_METHODS,
 )
@@ -47,6 +48,7 @@ async def async_setup_entry(
         TankHabitatSelect(coordinator),
         TankProblemSelect(coordinator),
         TankMethodSelect(coordinator),
+        AdvisorDemandDirectionSelect(coordinator),
     ])
 
 
@@ -121,3 +123,37 @@ class TankMethodSelect(_TankSelectBase):
 
     async def async_select_option(self, option: str) -> None:
         await self._coordinator.async_set_habitat(method=option)
+
+
+class AdvisorDemandDirectionSelect(SelectEntity):
+    """Inline form select for the demand-change `expected_direction`.
+
+    State is held in the coordinator's advisor form blob so the user's
+    selection persists across HA restarts and is readable via template
+    in the dashboard's "Log demand change" submit button.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_unique_id = "reef_advisor_form_demand_direction"
+    _attr_name = "Demand change direction"
+    _attr_icon = "mdi:swap-vertical"
+    _attr_options = ["increase", "decrease", "unknown"]
+    _attr_device_info = _device_info()
+
+    def __init__(self, coordinator: ReefDataCoordinator) -> None:
+        self._coordinator = coordinator
+
+    @property
+    def current_option(self) -> str | None:
+        v = self._coordinator.advisor_form_value("demand_direction")
+        return str(v) if v in self._attr_options else "unknown"
+
+    async def async_select_option(self, option: str) -> None:
+        await self._coordinator.async_set_advisor_form_value(
+            "demand_direction", option,
+        )
+        # Force HA to re-read current_option and update state. Without
+        # this, non-polling entities (`_attr_should_poll = False`) can
+        # leave stale state in HA's state machine after a service call.
+        self.async_write_ha_state()
