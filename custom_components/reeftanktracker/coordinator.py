@@ -4,6 +4,12 @@ Owns the on-disk state (`Store`-backed JSON in HA's .storage) and exposes
 helpers to record readings, manage inventory, and query "latest known
 value" per parameter. Sensors and number entities subscribe to its
 state-changed dispatch signal.
+
+For historical data we ALSO write to HA's long-term statistics table
+(via `recorder.async_import_statistics`) using each reading's actual
+`sample_taken_at`. Without that, all readings would land at "now" in
+HA's history graphs because the state machine timestamps state changes
+with wall-clock time, not the underlying sample time.
 """
 from __future__ import annotations
 
@@ -17,6 +23,21 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
+# Recorder/statistics imports are wrapped because they're an HA-internal
+# API surface that occasionally moves; we degrade gracefully if the
+# recorder isn't loaded (rare but possible in stripped-down setups).
+try:
+    from homeassistant.components.recorder.statistics import (
+        async_import_statistics,
+    )
+    from homeassistant.components.recorder.models import (
+        StatisticData,
+        StatisticMetaData,
+    )
+    _STATS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _STATS_AVAILABLE = False
+
 from .const import (
     DOMAIN,
     HABITATS,
@@ -29,6 +50,7 @@ from .const import (
     SOURCE_MANUAL,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TEST_METHODS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -104,6 +126,10 @@ class ReefDataCoordinator:
                 "name": "Reef Tank",
                 "habitat": HABITATS[0],
                 "problem": PROBLEMS[0],
+                # Active session method — used as the default when the
+                # user enters a value via a `number.reef_tank_*_entry`
+                # entity. "Unspecified" → method=None on records.
+                "method": TEST_METHODS[0],
             },
             "readings": [],
             "inventory": [],
@@ -145,7 +171,8 @@ class ReefDataCoordinator:
         return self._data["tank"]
 
     async def async_set_habitat(self, habitat: str | None = None,
-                                problem: str | None = None) -> None:
+                                problem: str | None = None,
+                                method: str | None = None) -> None:
         if habitat is not None:
             if habitat not in HABITATS:
                 raise ValueError(f"Unknown habitat: {habitat!r}")
@@ -154,8 +181,20 @@ class ReefDataCoordinator:
             if problem not in PROBLEMS:
                 raise ValueError(f"Unknown problem: {problem!r}")
             self._data["tank"]["problem"] = problem
+        if method is not None:
+            if method not in TEST_METHODS:
+                raise ValueError(f"Unknown method: {method!r}")
+            self._data["tank"]["method"] = method
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_HABITAT_CHANGED)
+
+    @property
+    def active_method(self) -> str | None:
+        """The currently selected test method, or None if 'Unspecified'."""
+        m = self._data["tank"].get("method")
+        if not m or m == "Unspecified":
+            return None
+        return m
 
     # ------------------------------------------------------------------
     # Readings
@@ -195,8 +234,54 @@ class ReefDataCoordinator:
             "Recorded %s=%s %s (source=%s, sample=%s)",
             parameter, value, unit or "", source, reading.sample_taken_at,
         )
+        # Backfill HA's long-term statistics so the reading shows up in
+        # history graphs at its actual sample time. Without this all
+        # readings would pile up at "now" because the state machine
+        # timestamps state changes with wall-clock time.
+        self._import_statistic(reading)
         async_dispatcher_send(self.hass, SIGNAL_READING_RECORDED, parameter)
         return reading
+
+    def _import_statistic(self, reading: Reading) -> None:
+        """Write a single reading into HA's long-term statistics table.
+
+        Stat granularity is hourly — multiple readings in the same hour
+        for the same parameter collapse to a single bucket (the latest
+        write wins). For typical reef-test cadences (< 1 reading per
+        parameter per hour), no information is lost.
+        """
+        if not _STATS_AVAILABLE:
+            return
+        try:
+            dt = datetime.fromisoformat(reading.sample_taken_at)
+        except (ValueError, TypeError):
+            return
+        # Round to the hour — HA stores stats hourly.
+        dt = dt.replace(minute=0, second=0, microsecond=0)
+        statistic_id = f"sensor.reef_tank_{reading.parameter}_latest"
+        metadata = StatisticMetaData(
+            has_mean=True,
+            has_sum=False,
+            name=None,
+            source="recorder",  # internal source — same statistic_id as the entity
+            statistic_id=statistic_id,
+            unit_of_measurement=reading.unit,
+        )
+        stats = [
+            StatisticData(
+                start=dt,
+                mean=reading.value,
+                min=reading.value,
+                max=reading.value,
+            )
+        ]
+        try:
+            async_import_statistics(self.hass, metadata, stats)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "async_import_statistics failed for %s @ %s: %s",
+                statistic_id, dt, exc,
+            )
 
     def latest_reading(self, parameter: str) -> dict[str, Any] | None:
         """Most recent reading for `parameter`, comparing by sample_taken_at.
@@ -220,6 +305,62 @@ class ReefDataCoordinator:
 
     def readings_for(self, parameter: str) -> list[dict[str, Any]]:
         return [r for r in self._data["readings"] if r["parameter"] == parameter]
+
+    async def async_backfill_statistics(self, parameter: str | None = None) -> int:
+        """Re-import all stored readings into HA's statistics table.
+
+        Use after upgrading to a version that adds statistics support
+        for data that was already stored, OR after manually editing
+        the storage file. Returns the number of readings imported.
+
+        If `parameter` is given, only that parameter's readings are
+        backfilled. Otherwise all parameters are processed.
+        """
+        if not _STATS_AVAILABLE:
+            return 0
+        readings = self._data["readings"]
+        if parameter:
+            readings = [r for r in readings if r["parameter"] == parameter]
+
+        # Group by parameter so we can write each in one call.
+        by_param: dict[str, list[dict[str, Any]]] = {}
+        for r in readings:
+            by_param.setdefault(r["parameter"], []).append(r)
+
+        total = 0
+        for pid, rs in by_param.items():
+            stats: list[StatisticData] = []
+            unit: str | None = None
+            for r in rs:
+                try:
+                    dt = datetime.fromisoformat(r["sample_taken_at"])
+                except (ValueError, TypeError, KeyError):
+                    continue
+                dt = dt.replace(minute=0, second=0, microsecond=0)
+                stats.append(StatisticData(
+                    start=dt,
+                    mean=r["value"],
+                    min=r["value"],
+                    max=r["value"],
+                ))
+                if unit is None and r.get("unit"):
+                    unit = r["unit"]
+            if not stats:
+                continue
+            metadata = StatisticMetaData(
+                has_mean=True, has_sum=False,
+                name=None, source="recorder",
+                statistic_id=f"sensor.reef_tank_{pid}_latest",
+                unit_of_measurement=unit,
+            )
+            try:
+                async_import_statistics(self.hass, metadata, stats)
+                total += len(stats)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Backfill failed for %s: %s", pid, exc,
+                )
+        return total
 
     # ------------------------------------------------------------------
     # Inventory

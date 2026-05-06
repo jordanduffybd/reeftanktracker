@@ -41,6 +41,7 @@ from .dashboard import (
 from .parameters import INPUT_PARAMETERS
 
 SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
+SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ REMOVE_INVENTORY_SCHEMA = vol.Schema({
 SET_HABITAT_SCHEMA = vol.Schema({
     vol.Optional("habitat"): vol.In(HABITATS),
     vol.Optional("problem"): vol.In(PROBLEMS),
+    vol.Optional("method"): cv.string,
 })
 
 IMPORT_ICP_SCHEMA = vol.Schema({
@@ -152,6 +154,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_RECORD_READING, SERVICE_ADD_INVENTORY,
                 SERVICE_REMOVE_INVENTORY, SERVICE_SET_HABITAT,
                 SERVICE_IMPORT_ICP, SERVICE_REGENERATE_DASHBOARD,
+                SERVICE_BACKFILL_STATISTICS,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -195,6 +198,7 @@ async def _async_register_services(
         await coordinator.async_set_habitat(
             habitat=call.data.get("habitat"),
             problem=call.data.get("problem"),
+            method=call.data.get("method"),
         )
 
     async def handle_import_icp(call: ServiceCall) -> None:
@@ -202,6 +206,12 @@ async def _async_register_services(
 
     async def handle_regenerate_dashboard(call: ServiceCall) -> None:
         await regenerate_dashboard(hass, coordinator)
+
+    async def handle_backfill_statistics(call: ServiceCall) -> None:
+        n = await coordinator.async_backfill_statistics(
+            parameter=call.data.get("parameter") or None,
+        )
+        _LOGGER.info("Backfilled %d statistic points", n)
 
     if not hass.services.has_service(DOMAIN, SERVICE_RECORD_READING):
         hass.services.async_register(
@@ -226,4 +236,8 @@ async def _async_register_services(
         )
         hass.services.async_register(
             DOMAIN, SERVICE_REGENERATE_DASHBOARD, handle_regenerate_dashboard,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_BACKFILL_STATISTICS, handle_backfill_statistics,
+            schema=vol.Schema({vol.Optional("parameter"): cv.string}),
         )

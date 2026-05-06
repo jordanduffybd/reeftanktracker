@@ -46,6 +46,24 @@ PROBLEMS = [
     "Nuisance Algae",
 ]
 
+# Common test methods/brands across the reef hobby. Used to populate the
+# session-level "active test method" select. The first item is the
+# default on first install. "Unspecified" is the explicit "I don't want
+# to record a method" option, which leaves method=None on entries.
+TEST_METHODS = [
+    "Unspecified",
+    "Hanna ULR",
+    "Hanna",
+    "Salifert",
+    "Red Sea Pro",
+    "API",
+    "Tropic Marin",
+    "Triton ICP",
+    "Refractometer",
+    "Probe",
+    "Other",
+]
+
 # Inventory categories
 INVENTORY_CATEGORIES = [
     "coral",

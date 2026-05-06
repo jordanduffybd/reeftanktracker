@@ -100,13 +100,18 @@ class ReefEntryNumber(NumberEntity):
         return latest["value"]
 
     async def async_set_native_value(self, value: float) -> None:
-        """User typed a value — record it as a manual reading immediately."""
-        method = self._param.get("common_methods", [None])[0]
+        """User typed a value — record it as a manual reading immediately.
+
+        The method is taken from the session-level "Active Test Method"
+        select (`select.reef_tank_active_test_method`). If that's set to
+        "Unspecified" we leave method=None — better to record nothing
+        than to stamp an inaccurate label.
+        """
         await self._coordinator.async_record_reading(
             parameter=self._param["id"],
             value=float(value),
             unit=self._param.get("unit"),
-            method=method,
+            method=self._coordinator.active_method,
             source=SOURCE_MANUAL,
         )
         # async_record_reading dispatches SIGNAL_READING_RECORDED, which

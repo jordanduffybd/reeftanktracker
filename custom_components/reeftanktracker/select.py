@@ -25,6 +25,7 @@ from .const import (
     HABITATS,
     PROBLEMS,
     SIGNAL_HABITAT_CHANGED,
+    TEST_METHODS,
 )
 from .coordinator import ReefDataCoordinator
 
@@ -47,6 +48,7 @@ async def async_setup_entry(
     async_add_entities([
         TankHabitatSelect(coordinator),
         TankProblemSelect(coordinator),
+        TankMethodSelect(coordinator),
     ])
 
 
@@ -96,3 +98,28 @@ class TankProblemSelect(_TankSelectBase):
 
     async def async_select_option(self, option: str) -> None:
         await self._coordinator.async_set_habitat(problem=option)
+
+
+class TankMethodSelect(_TankSelectBase):
+    """Active test method for the current session.
+
+    Used as the default method label when the user types into a number
+    entry entity. Set this once per session (e.g. "Hanna ULR" before a
+    Hanna run, "Salifert" before a Salifert run) and all auto-saved
+    entries during that session will be tagged with the selected method.
+
+    Selecting "Unspecified" leaves method=None on entries — useful when
+    you're not tracking which kit you used.
+    """
+
+    _attr_unique_id = "reef_tank_method_select"
+    _attr_name = "Active Test Method"
+    _attr_icon = "mdi:flask-outline"
+    _attr_options = list(TEST_METHODS)
+
+    @property
+    def current_option(self) -> str | None:
+        return self._coordinator.tank.get("method")
+
+    async def async_select_option(self, option: str) -> None:
+        await self._coordinator.async_set_habitat(method=option)

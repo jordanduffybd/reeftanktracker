@@ -136,8 +136,11 @@ remove_inventory:
         text:
 
 set_habitat:
-  name: Set Habitat / Problem
-  description: Update the tank's current habitat classification or problem flag.
+  name: Set Tank Context
+  description: >
+    Update the tank's habitat, current problem, or active test method.
+    Method is used as the default label when entering a value via the
+    parameter number entities.
   fields:
     habitat:
       name: Habitat
@@ -166,6 +169,23 @@ set_habitat:
             - Poor colour
             - Mortality
             - Nuisance Algae
+    method:
+      name: Active Test Method
+      description: Default method used when entering values via number entities.
+      selector:
+        select:
+          options:
+            - Unspecified
+            - Hanna ULR
+            - Hanna
+            - Salifert
+            - Red Sea Pro
+            - API
+            - Tropic Marin
+            - Triton ICP
+            - Refractometer
+            - Probe
+            - Other
 
 import_icp:
   name: Import ICP Test
@@ -180,6 +200,25 @@ import_icp:
       description: Full JSON test record (test_id, sample_date, elements, matrix, ...).
       selector:
         object:
+
+backfill_statistics:
+  name: Backfill Statistics
+  description: >
+    Re-import every stored reading into Home Assistant's long-term
+    statistics table at its original sample timestamp. Use this once
+    after upgrading from a version that didn't write statistics, or
+    after manually editing the storage file.
+
+    Without this, historical readings (e.g. imported from Aquarium Log)
+    only appear as state changes at "now" — graphs won't show the
+    actual time series.
+  fields:
+    parameter:
+      name: Parameter
+      description: Limit to one parameter id (e.g. kh, calcium). Empty = all.
+      example: kh
+      selector:
+        text:
 
 regenerate_dashboard:
   name: Regenerate Dashboard
