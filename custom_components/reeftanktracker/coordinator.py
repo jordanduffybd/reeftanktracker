@@ -20,6 +20,7 @@ import logging
 import uuid
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
@@ -242,6 +243,22 @@ class ReefDataCoordinator:
         async_dispatcher_send(self.hass, SIGNAL_READING_RECORDED, parameter)
         return reading
 
+    def _resolve_latest_entity_id(self, parameter: str) -> str | None:
+        """Find the actual entity_id for `sensor.<...>_latest` in the
+        registry, no matter which version of the integration first
+        registered it. Returns None if the entity doesn't exist (e.g.
+        ICP-only parameters where no sensor was created).
+        """
+        try:
+            registry = er.async_get(self.hass)
+        except Exception:  # noqa: BLE001
+            return None
+        unique_id = f"reef_{parameter}_latest"
+        for entry in registry.entities.values():
+            if entry.platform == DOMAIN and entry.unique_id == unique_id:
+                return entry.entity_id
+        return None
+
     def _import_statistic(self, reading: Reading) -> None:
         """Write a single reading into HA's long-term statistics table.
 
@@ -249,6 +266,9 @@ class ReefDataCoordinator:
         for the same parameter collapse to a single bucket (the latest
         write wins). For typical reef-test cadences (< 1 reading per
         parameter per hour), no information is lost.
+
+        Looks up the actual entity_id from the registry so this works
+        regardless of which version first registered the entities.
         """
         if not _STATS_AVAILABLE:
             return
@@ -256,9 +276,15 @@ class ReefDataCoordinator:
             dt = datetime.fromisoformat(reading.sample_taken_at)
         except (ValueError, TypeError):
             return
+        statistic_id = self._resolve_latest_entity_id(reading.parameter)
+        if not statistic_id:
+            _LOGGER.debug(
+                "No registered entity for parameter %r — skipping stats import",
+                reading.parameter,
+            )
+            return
         # Round to the hour — HA stores stats hourly.
         dt = dt.replace(minute=0, second=0, microsecond=0)
-        statistic_id = f"sensor.reef_tank_{reading.parameter}_latest"
         metadata = StatisticMetaData(
             has_mean=True,
             has_sum=False,
@@ -317,10 +343,18 @@ class ReefDataCoordinator:
         backfilled. Otherwise all parameters are processed.
         """
         if not _STATS_AVAILABLE:
+            _LOGGER.warning(
+                "Backfill skipped — recorder/statistics module not available"
+            )
             return 0
         readings = self._data["readings"]
         if parameter:
             readings = [r for r in readings if r["parameter"] == parameter]
+
+        _LOGGER.warning(
+            "Backfill: processing %d stored readings (parameter filter: %s)",
+            len(readings), parameter or "all",
+        )
 
         # Group by parameter so we can write each in one call.
         by_param: dict[str, list[dict[str, Any]]] = {}
@@ -328,7 +362,13 @@ class ReefDataCoordinator:
             by_param.setdefault(r["parameter"], []).append(r)
 
         total = 0
+        skipped_no_entity: list[str] = []
         for pid, rs in by_param.items():
+            statistic_id = self._resolve_latest_entity_id(pid)
+            if not statistic_id:
+                skipped_no_entity.append(f"{pid} ({len(rs)} readings)")
+                continue
+
             stats: list[StatisticData] = []
             unit: str | None = None
             for r in rs:
@@ -350,16 +390,27 @@ class ReefDataCoordinator:
             metadata = StatisticMetaData(
                 has_mean=True, has_sum=False,
                 name=None, source="recorder",
-                statistic_id=f"sensor.reef_tank_{pid}_latest",
+                statistic_id=statistic_id,
                 unit_of_measurement=unit,
             )
             try:
                 async_import_statistics(self.hass, metadata, stats)
                 total += len(stats)
+                _LOGGER.warning(
+                    "Backfill: wrote %d points to %s", len(stats), statistic_id,
+                )
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.warning(
-                    "Backfill failed for %s: %s", pid, exc,
+                    "Backfill failed for %s (%s): %s",
+                    pid, statistic_id, exc, exc_info=True,
                 )
+
+        if skipped_no_entity:
+            _LOGGER.warning(
+                "Backfill: skipped (no registered entity): %s",
+                ", ".join(skipped_no_entity),
+            )
+        _LOGGER.warning("Backfill complete: %d points written", total)
         return total
 
     # ------------------------------------------------------------------

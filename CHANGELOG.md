@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.11
+
+- **Fix `backfill_statistics` silent no-op.** Was writing to `sensor.reef_tank_<param>_latest` regardless of the actual entity ID in your install. On installs that started on v0.1.0 (entities are `sensor.<param>_latest`) every write was discarded by the recorder because the statistic_id didn't match a registered entity, and there were no logs to explain why. Now uses entity-registry lookup by `unique_id` (same approach the dashboard generator uses), and logs at WARNING level: counts of points written per parameter, skipped parameters with no registered entity, and a final total. Run the service again after upgrading.
+- Statistics writes during normal `record_reading` use the same registry lookup, so live charts work regardless of which version first registered the entities.
+
 ## 0.1.10
 
 - **Fix the "Entity not found" issue in the auto-installed dashboard.** The dashboard generator now looks up actual entity IDs from HA's entity registry by `unique_id`, instead of guessing from the device-grouped naming pattern. Installs that started on v0.1.0 (entity IDs like `sensor.kh_latest`) will now get a working dashboard, as will installs that started on v0.1.2+ (entity IDs like `sensor.reef_tank_kh_latest`) — same logic, both work.
