@@ -57,9 +57,20 @@ def _install_ha_stubs() -> None:
         """Stub HA instance."""
     class ServiceCall:
         def __init__(self, data): self.data = data
+    class State:
+        def __init__(self, entity_id, state, last_updated=None, attributes=None):
+            self.entity_id = entity_id
+            self.state = state
+            self.last_updated = last_updated
+            self.attributes = attributes or {}
+    class Event:
+        def __init__(self, data):
+            self.data = data
     def callback(fn): return fn  # decorator no-op
     core.HomeAssistant = HomeAssistant
     core.ServiceCall = ServiceCall
+    core.State = State
+    core.Event = Event
     core.callback = callback
     sys.modules["homeassistant.core"] = core
 
@@ -105,6 +116,12 @@ def _install_ha_stubs() -> None:
     dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
     dispatcher.async_dispatcher_send = MagicMock()
     sys.modules["homeassistant.helpers.dispatcher"] = dispatcher
+
+    event = types.ModuleType("homeassistant.helpers.event")
+    # Default no-op subscriber; tests can monkeypatch this to capture
+    # the registered handler for synthetic state-change events.
+    event.async_track_state_change_event = lambda hass, ids, cb: (lambda: None)
+    sys.modules["homeassistant.helpers.event"] = event
 
     cv = types.ModuleType("homeassistant.helpers.config_validation")
     cv.string = str

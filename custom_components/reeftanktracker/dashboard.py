@@ -282,13 +282,65 @@ def _try_get_dashboards_collection(hass: HomeAssistant) -> Any:
 
 
 async def _write_dashboard_content(hass: HomeAssistant, config: dict[str, Any]) -> None:
-    """Write the dashboard's view YAML to .storage/lovelace.<id>."""
+    """Push the dashboard config and notify connected clients.
+
+    Prefer routing through HA's `LovelaceStorage.async_save(config)`:
+    that path updates the in-memory cache AND fires
+    `EVENT_LOVELACE_UPDATED`, so any browser tab on the dashboard
+    refreshes without an HA restart. The previous behaviour (direct
+    `Store.async_save`) wrote disk only — the user had to restart HA
+    before changes surfaced.
+
+    Falls back to direct Store write if the LovelaceStorage instance
+    isn't reachable (e.g. install Strategies 2/3 where we never wired
+    the dashboard into `hass.data['lovelace'].dashboards`). The fallback
+    requires a restart and we log loudly so it's obvious which path ran.
+    """
+    storage = _find_lovelace_storage(hass)
+    if storage is not None:
+        save = getattr(storage, "async_save", None)
+        if save is not None:
+            try:
+                await save(config)
+                _LOGGER.info(
+                    "Pushed Reef Tank dashboard config (%d views) via "
+                    "LovelaceStorage.async_save — open clients will reload",
+                    len(config["views"]),
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "LovelaceStorage.async_save raised %s — falling back to "
+                    "direct Store write (restart HA to see the new layout)",
+                    exc, exc_info=True,
+                )
+
     dashboard_store = Store(hass, 1, DASHBOARD_STORE_KEY)
     await dashboard_store.async_save({"config": config})
-    _LOGGER.info(
-        "Wrote Reef Tank dashboard config (%d views) to .storage/%s",
+    _LOGGER.warning(
+        "Wrote Reef Tank dashboard config (%d views) to .storage/%s via "
+        "direct Store (LovelaceStorage unreachable). RESTART HA to surface "
+        "the new layout.",
         len(config["views"]), DASHBOARD_STORE_KEY,
     )
+
+
+def _find_lovelace_storage(hass: HomeAssistant) -> Any:
+    """Resolve the LovelaceStorage instance for our dashboard's url_path.
+
+    Modern HA exposes `hass.data['lovelace'].dashboards` — a dict of
+    `url_path → LovelaceConfig` (LovelaceStorage for storage-mode
+    dashboards). Older versions use a plain dict. We probe both.
+    """
+    lovelace_data = hass.data.get("lovelace")
+    if lovelace_data is None:
+        return None
+    dashboards = getattr(lovelace_data, "dashboards", None)
+    if dashboards is None and isinstance(lovelace_data, dict):
+        dashboards = lovelace_data.get("dashboards")
+    if not isinstance(dashboards, dict):
+        return None
+    return dashboards.get(DASHBOARD_URL_PATH)
 
 
 async def regenerate_dashboard(

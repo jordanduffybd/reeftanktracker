@@ -30,6 +30,7 @@ from .const import (
     SOURCE_ICP,
     SOURCE_MANUAL,
 )
+from .auto_source_listener import AutoSourceListener
 from .config_flow import auto_source_key
 from .coordinator import ReefDataCoordinator
 from .dashboard import (
@@ -138,6 +139,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_services(hass, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Subscribe to upstream auto-source sensors — every state change
+    # there can become a recorded reading. Started after platforms so
+    # the entities exist when the listener captures initial state.
+    listener = AutoSourceListener(hass, coordinator)
+    await listener.async_start()
+    entry.async_on_unload(listener.async_stop)
 
     # Auto-install the Lovelace dashboard. Deferred until HA is started
     # so the lovelace integration's data is fully populated — calling
