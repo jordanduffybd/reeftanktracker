@@ -24,11 +24,15 @@ the physical KH Keeper device).
   Idle unless you add an MQTT integration in dev. Available so future
   MQTT-driven tests work without extra setup.
 - **`mirror`** — Python service polling prod every 60 s and POSTing
-  state to dev. Read-only on prod. Defaults to **45 entities**: the
-  KH Keeper surface (5) plus the 5 read-only sensors (`supplement`,
-  `daily_dose`, `auto_dosed_today`, `manual_dosed_today`, `status`)
-  for each of the 8 heads across both RSDOSE4 units. Configurable via
-  `.env`.
+  state to dev. Read-only on prod. Defaults to **49 entities**: the
+  KH Keeper surface (9 — `kh`, `ph`, `ph_pure_tank_water`,
+  `ph_kh_test_water_reagent`, `refresh_ph_phase`, `refresh_ph_phase_eta`,
+  `last_test_time`, `calibration_due`, `calibration_due_warning`) plus
+  the 5 read-only sensors (`supplement`, `daily_dose`, `auto_dosed_today`,
+  `manual_dosed_today`, `status`) for each of the 8 heads across both
+  RSDOSE4 units. The split pH sensors require kh-keeper-bridge ≥ 0.1.12
+  and the refresh_ph_phase sensors require ≥ 0.1.13 on prod — older
+  prod is fine, the mirror skips 404s. Configurable via `.env`.
 
 ## First-time bootstrap
 

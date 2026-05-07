@@ -56,7 +56,27 @@ _RSDOSE_PER_HEAD_KEYS: list[str] = [
 ]
 _KH_KEEPER_ENTITIES: list[str] = [
     "sensor.kh_keeper_kh",
+    # Three pH sensors exist as of kh-keeper-bridge 0.1.12:
+    #   - ph                       — legacy/raw last-reported (any cuvette content)
+    #   - ph_pure_tank_water       — only updated by refresh_ph cycle (pure tank water)
+    #   - ph_kh_test_water_reagent — only updated by KH-test history (water + reagent)
+    # Mirror all three so dev exercises the same downstream consumer
+    # logic as prod (e.g. when reeftanktracker pH advisor's auto_source
+    # is wired to ph_pure_tank_water). The pH_kh_test sensor is
+    # published as entity_category=diagnostic and may be missing on
+    # devices not yet on 0.1.12 — the mirror skips 404s so older prod
+    # is fine. Note: HA's MQTT discovery generates entity_ids from the
+    # friendly NAME ("pH (Pure Tank Water)"), not the object_id we
+    # specify in the discovery payload — that's why the entity_ids are
+    # the long-form versions below rather than `ph_pure` / `ph_kh_test`.
     "sensor.kh_keeper_ph",
+    "sensor.kh_keeper_ph_pure_tank_water",
+    "sensor.kh_keeper_ph_kh_test_water_reagent",
+    # Refresh-pH cycle progress (kh-keeper-bridge ≥ 0.1.13). Mirrors
+    # the silent ~10-min refresh_ph window so dev dashboards show the
+    # same phase tile as prod. 404 on older add-on versions is fine.
+    "sensor.kh_keeper_refresh_ph_phase",
+    "sensor.kh_keeper_refresh_ph_phase_eta",
     "sensor.kh_keeper_last_test_time",
     "sensor.kh_keeper_calibration_due",
     "binary_sensor.kh_keeper_calibration_due_warning",
