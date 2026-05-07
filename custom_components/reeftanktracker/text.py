@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DEVICE_ID, DEVICE_MANUFACTURER, DEVICE_MODEL, DEVICE_NAME,
-    DOMAIN, SIGNAL_ADVISOR_FORM_CHANGED,
+    DOMAIN,
 )
 from .coordinator import ReefDataCoordinator
 

@@ -17,7 +17,6 @@ exercised by `tests/test_icp_importer.py` with HTML fixtures.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -30,7 +29,6 @@ import aiohttp
 
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
 from .coordinator import ReefDataCoordinator
 from .triton_elements import param_id_for_element
 

@@ -45,7 +45,7 @@ must pass before the algorithm will issue a new suggestion.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Iterable
 

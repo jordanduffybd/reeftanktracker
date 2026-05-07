@@ -22,7 +22,6 @@ from .const import (
     DOMAIN,
     HABITATS,
     PROBLEMS,
-    SIGNAL_ADVISOR_FORM_CHANGED,
     SIGNAL_HABITAT_CHANGED,
     TEST_METHODS,
 )
