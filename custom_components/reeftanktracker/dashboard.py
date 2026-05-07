@@ -387,6 +387,7 @@ def build_dashboard_config(hass: HomeAssistant | None = None) -> dict[str, Any]:
             _build_test_session_view(uid_map),
             _build_overview_view(uid_map),
             _build_advisor_view(uid_map),
+            _build_dosing_plan_view(uid_map),
             _build_diagnostics_view(uid_map),
         ],
     }
@@ -412,15 +413,10 @@ def _build_test_session_view(uid_map: dict[str, str]) -> dict[str, Any]:
         }
         for p in INPUT_PARAMETERS
     ]
-    # Tank-level tiles. Use the select entities (so they're tappable to
-    # change habitat/problem/method right from the dashboard) when
-    # they're in the registry, else fall back to the read-only sensor.
-    habitat_e = _eid(uid_map, "reef_tank_habitat_select", "select") \
-        if "reef_tank_habitat_select" in uid_map \
-        else _eid(uid_map, "reef_tank_habitat")
-    problem_e = _eid(uid_map, "reef_tank_problem_select", "select") \
-        if "reef_tank_problem_select" in uid_map \
-        else _eid(uid_map, "reef_tank_problem")
+    # Tank-level tiles. The selects are the single source of truth for
+    # habitat/problem/method — tappable to change right from the dashboard.
+    habitat_e = _eid(uid_map, "reef_tank_habitat_select", "select")
+    problem_e = _eid(uid_map, "reef_tank_problem_select", "select")
     method_e = _eid(uid_map, "reef_tank_method_select", "select")
 
     context_cards = [
@@ -758,6 +754,135 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                     {"type": "heading", "heading": "Demand change",
                      "icon": "mdi:swap-vertical"},
                     demand_change_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [help_card],
+            },
+        ],
+    }
+
+
+def _build_dosing_plan_view(uid_map: dict[str, str]) -> dict[str, Any]:
+    """Surfaces the most-recent ICP test's habitat-aware dose plan so the
+    user can program the high-volume supplements into their RSDOSE4 heads
+    manually. The plan is sorted by importance — most-important first.
+
+    The view:
+      - Shows the active habitat/problem the plan was computed for
+      - Lists the dose recommendations + corrective dose strings
+      - Provides a re-import action so the user can change habitat/problem
+        and pull a fresh plan from Triton without re-typing the URL
+    """
+    plan_eid = _eid(uid_map, "reef_active_dosing_plan")
+
+    # Headline tile: the sensor IS a TIMESTAMP (sample-collection date),
+    # so HA renders it as "X days ago" / a relative-time label — exactly
+    # what we want for "this plan reflects a sample taken N days ago".
+    headline_tile = {
+        "type": "tile",
+        "entity": plan_eid,
+        "name": "Last test taken",
+        "icon": "mdi:beaker-plus-outline",
+        "vertical": True,
+        "state_content": ["state"],
+    }
+
+    # Active scenario as a markdown card — kills the repeated icon row +
+    # label truncation that came from `entities`/`attribute` rows.
+    summary_card = {
+        "type": "markdown",
+        "content": (
+            "{% set s = states('" + plan_eid + "') %}"
+            "{% if s in ('unknown', 'unavailable', 'none') %}"
+            "_No ICP test imported yet._"
+            "{% else %}"
+            "### Active scenario\n\n"
+            "| | |\n|---|---|\n"
+            "| Test ID | `{{ state_attr('" + plan_eid + "', 'test_id') }}` |\n"
+            "| Sample date | {{ state_attr('" + plan_eid + "', 'sample_date') }} |\n"
+            "| Imported | {{ state_attr('" + plan_eid + "', 'imported_at') }} |\n"
+            "| Active habitat | **{{ state_attr('" + plan_eid + "', 'active_habitat') }}** |\n"
+            "| Active problem | **{{ state_attr('" + plan_eid + "', 'active_problem') }}** |\n"
+            "| Originally rendered for | "
+            "{{ state_attr('" + plan_eid + "', 'rendered_for_habitat') }} / "
+            "{{ state_attr('" + plan_eid + "', 'rendered_for_problem') }} |\n"
+            "| Source | [View on Triton]({{ state_attr('" + plan_eid + "', 'url') }}) |\n"
+            "{% endif %}"
+        ),
+    }
+
+    # Dose plan as a markdown card. We use `\n\n` between recommendations
+    # to force fresh top-level bullets in the rendered list — the prior
+    # version had trailing whitespace that made every element after Ca
+    # render as a sub-bullet of Ca.
+    plan_card = {
+        "type": "markdown",
+        "content": (
+            "{% set recs = state_attr('" + plan_eid + "', 'recommendations') %}"
+            "{% if recs %}"
+            "### Dose plan — sorted by importance\n\n"
+            "{% for r in recs %}"
+            "**{{ r.symbol }}** — {{ '★' * (r.importance_stars or 0) }} "
+            "{{ r.importance_label or '' }}\n\n"
+            "{{ r.corrective_dose or '_No corrective dose suggested._' }}"
+            "{% if r.product_reference %}\n\n"
+            "*Product: {{ r.product_reference }}*"
+            "{% endif %}\n\n---\n\n"
+            "{% endfor %}"
+            "{% else %}"
+            "_No ICP test imported yet. Call_ "
+            "`reeftanktracker.import_triton_url` _from Developer Tools "
+            "→ Actions with your Triton showroom URL plus the habitat "
+            "and problem you want plan guidance for._"
+            "{% endif %}"
+        ),
+    }
+
+    help_card = {
+        "type": "markdown",
+        "content": (
+            "**Importing / re-importing:** call "
+            "`reeftanktracker.import_triton_url` from Developer Tools → "
+            "Actions with your Triton showroom URL plus the habitat and "
+            "problem you want the plan computed for. Re-running with "
+            "different inputs overwrites the active plan — useful if "
+            "you're changing tank direction (e.g. Mixed Reef → SPS) or "
+            "have a transient issue (e.g. Cyanobacteria) and want plan "
+            "guidance.\n\n"
+            "**Manual programming:** for high-volume supplements, take "
+            "the corrective-dose string above and split it across the "
+            "RSDOSE4 head schedule (e.g. \"17.12 ml for 1 day\" → 17 ml "
+            "spread over the day). The advisor view handles alkalinity "
+            "trend-based daily-dose tuning separately."
+        ),
+    }
+
+    return {
+        "title": "Dosing Plan",
+        "path": "dosing-plan",
+        "icon": "mdi:beaker-plus-outline",
+        "type": "sections",
+        "max_columns": 3,
+        "sections": [
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading",
+                     "heading": "Active dosing plan from latest ICP test",
+                     "icon": "mdi:beaker-plus-outline"},
+                    headline_tile,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [
+                    summary_card,
+                    plan_card,
                 ],
             },
             {

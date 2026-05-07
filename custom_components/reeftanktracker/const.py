@@ -96,6 +96,7 @@ SIGNAL_INVENTORY_CHANGED = f"{DOMAIN}_inventory_changed"
 SIGNAL_HABITAT_CHANGED = f"{DOMAIN}_habitat_changed"
 SIGNAL_ADVISOR_UPDATED = f"{DOMAIN}_advisor_updated"
 SIGNAL_ADVISOR_FORM_CHANGED = f"{DOMAIN}_advisor_form_changed"
+SIGNAL_ICP_TEST_RECORDED = f"{DOMAIN}_icp_test_recorded"
 
 # Event-bus event names. Fired when the user takes an action so that
 # automations can hook in (e.g. notify on water change, snapshot to a

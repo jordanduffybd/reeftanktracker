@@ -40,6 +40,22 @@ _LOGGER = logging.getLogger(__name__)
 DEBUG_BUNDLE_DIR = "icpimport_debug"
 USER_AGENT = "reeftanktracker (+https://github.com/jordanduffybd/reeftanktracker)"
 
+# Triton's public dose-calc API. Reverse-engineered from eval.js — the
+# JS calls this whenever the user changes habitat/problem on the
+# showroom page. Unauthenticated, accepts JSON payload with obfuscated
+# keys, returns dose recommendation text. Reachable from any IP.
+TRITON_DOSE_API_URL = "https://www.triton-lab.de:1024/api/eval_a/get_dosage_info"
+
+# The obfuscated keys the API expects (matching eval.js field names).
+# If Triton renames these, recalc breaks loudly with a 200-status
+# error response (the API tells us which key it wanted).
+_DOSE_API_KEY_LANG = "t73737838645455453"
+_DOSE_API_KEY_QUNIT = "t83877730073732222"     # filling-quantity unit ("l")
+_DOSE_API_KEY_QUANTITY = "t83888382655262354"  # tank volume in litres
+_DOSE_API_KEY_VALUE = "t22346428282983333"     # measured value (number as string)
+_DOSE_API_KEY_SETPOINT = "t22376096786843427"  # target setpoint (number as string)
+_DOSE_API_KEY_ELEMENT = "t99833873736325522"   # element identifier (e.g. "Ca")
+
 # --- Triton showroom HTML structure (inspected 2026-05-06 against
 # https://www.triton-lab.de/en/showroom/icp-oes/229019) ---
 #
@@ -69,6 +85,45 @@ _VALUE_UNIT_RE = re.compile(
     r"^\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>\S.*?)?\s*$"
 )
 _TEST_ID_FROM_URL_RE = re.compile(r"/icp-oes/(\d+)")
+
+# The page embeds the FULL habitat × problem element-rule library as a
+# JSON string assigned to `let t79854029875490835 = '...';`. This is
+# what Triton's JS uses client-side to filter the dosage blocks when
+# the user changes habitat/problem. We extract it once during parse so
+# we can do the same filtering server-side.
+_RULE_LIBRARY_RE = re.compile(
+    r"let t79854029875490835 = '(?P<json>\[.*?\])';",
+    re.DOTALL,
+)
+
+# P and TNb (total nitrogen) have habitat-specific setpoints. Triton's
+# eval.js hardcodes these — they're not in the embedded JSON. Captured
+# here as a static mapping (refresh by inspecting eval.js if Triton
+# updates them).
+TRITON_PER_HABITAT_SETPOINTS: dict[str, dict[str, str]] = {
+    "SPS Outer Reef":          {"P": "6 µg/l",  "TNb": "0.4 mg/l"},
+    "SPS Inner Reef":          {"P": "12 µg/l", "TNb": "0.8 mg/l"},
+    "LPS Dominant":            {"P": "12 µg/l", "TNb": "0.8 mg/l"},
+    "Mixed Reef":              {"P": "12 µg/l", "TNb": "0.8 mg/l"},
+    "Reef Aquarium with Clam": {"P": "12 µg/l", "TNb": "0.8 mg/l"},
+    "Soft Coral Dominant":     {"P": "19 µg/l", "TNb": "1.3 mg/l"},
+    "Seagrass":                {"P": "19 µg/l", "TNb": "1.3 mg/l"},
+    "NPS (Filter Feeders)":    {"P": "19 µg/l", "TNb": "1.3 mg/l"},
+    "Fish Only":               {"P": "6 µg/l",  "TNb": "0.4 mg/l"},
+}
+
+# Map our integration's PROBLEMS to Triton's problem labels.
+# Triton labels "None" as "No issues (default)" in its rule library.
+TRITON_PROBLEM_LABEL_MAP: dict[str, str] = {
+    "None": "No issues (default)",
+    "Cyanobacteria": "Cyanobacteria",
+    "RTN": "RTN",
+    "STN": "STN",
+    "Poor growth": "Poor growth",
+    "Poor colour": "Poor colour",
+    "Mortality": "Mortality",
+    "Nuisance Algae": "Nuisance Algae",
+}
 
 # Dose-tab parsing. Each element rated for dosing is wrapped in
 #   <div class="dosage-block dosage-block-Ca"> ... </div>
@@ -163,9 +218,14 @@ class ParsedReport:
     stable for a given physical test. We use `triton-<numeric-url-id>`.
 
     `selected_habitat` / `selected_problem` reflect the user's choices
-    when generating the showroom URL. Different choices change the
-    rendered dose recommendations — re-share with different selections
-    if you want a different view.
+    *embedded in the showroom HTML* when the URL was generated. The
+    integration lets the user override these (the rule library is also
+    extracted, so we can filter recommendations to any combo without
+    re-fetching).
+
+    `rule_library` is the embedded ECS rule structure — for each habitat
+    × problem combination, the list of element identifiers that have
+    relevant rules. Used to filter `recommendations` to a chosen combo.
     """
     test_id: str
     sample_date: str       # ISO date, "YYYY-MM-DD"
@@ -174,6 +234,7 @@ class ParsedReport:
     recommendations: list[DoseRecommendation] = field(default_factory=list)
     selected_habitat: str | None = None
     selected_problem: str | None = None
+    rule_library: list[dict[str, Any]] = field(default_factory=list)
     raw_url: str | None = None
     parser_version: str = "phase1-stub"
 
@@ -192,6 +253,82 @@ class ParserError(Exception):
 # ---------------------------------------------------------------------------
 # Pure parser — exercised by tests with HTML fixtures
 # ---------------------------------------------------------------------------
+def _extract_rule_library(html: str) -> list[dict[str, Any]]:
+    """Extract Triton's habitat × problem element-rule structure from
+    the page. Returns empty list (degraded mode) if the JSON variable
+    isn't found — the importer can still record the rendered
+    recommendations as-shown, just without habitat-switching.
+
+    Shape after parse:
+        [
+          {
+            "name": "SPS Outer Reef",
+            "elements": [...],   # identifiers w/ habitat-specific overrides
+            "ecs_issues": {
+              "ecs_rule_13": {
+                "name": "No issues (default)",
+                "uid": 13,
+                "ecs_elems": {
+                  "ecs_elem_189": {
+                    "uid": 189, "name": "...",
+                    "element": "Aluminium",
+                    "identifier": "Al",
+                  },
+                  ...
+                },
+              },
+              ...
+            },
+          },
+          ...
+        ]
+    """
+    import json as _json
+    m = _RULE_LIBRARY_RE.search(html)
+    if not m:
+        return []
+    try:
+        return _json.loads(m.group("json"))
+    except _json.JSONDecodeError as exc:
+        _LOGGER.warning("Failed to parse Triton rule library JSON: %s", exc)
+        return []
+
+
+def element_identifiers_for_combo(
+    rule_library: list[dict[str, Any]],
+    habitat: str | None,
+    problem: str | None,
+) -> set[str] | None:
+    """Look up the element identifiers Triton flags as relevant for a
+    given (habitat, problem) combo.
+
+    Returns a set of identifiers (e.g. {"Ca", "Mg", "I"}). Returns
+    None if either input is missing or the combo isn't in the library
+    — caller should not filter in that case (show everything).
+
+    Triton labels the "no problem" case as "No issues (default)" in
+    the rule library; pass our integration's "None" through
+    `TRITON_PROBLEM_LABEL_MAP` first.
+    """
+    if not rule_library or not habitat or not problem:
+        return None
+    triton_problem = TRITON_PROBLEM_LABEL_MAP.get(problem, problem)
+
+    for h in rule_library:
+        if h.get("name") != habitat:
+            continue
+        for issue in h.get("ecs_issues", {}).values():
+            if issue.get("name") != triton_problem:
+                continue
+            ids: set[str] = set()
+            for el in issue.get("ecs_elems", {}).values():
+                ident = el.get("identifier")
+                if ident:
+                    ids.add(ident)
+            return ids
+    return None
+
+
 def _strip_html_to_text(html_fragment: str) -> str:
     """Strip tags and collapse whitespace for human-readable advice text."""
     text = _TAG_STRIP_RE.sub(" ", html_fragment)
@@ -368,6 +505,10 @@ def parse_triton_showroom(html: str) -> ParsedReport:
     recommendations = _parse_dose_recommendations(html)
     selected_habitat, selected_problem = _parse_selected_habitat_problem(html)
 
+    # Rule library: lets us filter recommendations to a chosen
+    # (habitat × problem) combo without re-fetching from Triton.
+    rule_library = _extract_rule_library(html)
+
     return ParsedReport(
         test_id="",       # filled in by import_triton_url from the URL
         sample_date="",   # filled in by import_triton_url from service arg
@@ -376,6 +517,7 @@ def parse_triton_showroom(html: str) -> ParsedReport:
         recommendations=recommendations,
         selected_habitat=selected_habitat,
         selected_problem=selected_problem,
+        rule_library=rule_library,
         parser_version="phase1-2026-05-06",
     )
 
@@ -419,13 +561,102 @@ async def _fetch_url(url: str) -> str:
             return await resp.text()
 
 
+async def call_triton_dose_api(
+    *,
+    element_identifier: str,
+    measured_value: float,
+    setpoint: str,
+    tank_volume_l: float,
+    lang: str = "en",
+) -> str | None:
+    """Hit Triton's public dose-calc endpoint and return the corrective
+    dose text (e.g. "17.12 ml for 1 day").
+
+    `setpoint` is passed as Triton's display string ("440" or "12 µg/l")
+    — the API parses the leading numeric. We pass it as-is to mirror
+    what the JS does. Best-effort: returns None on any failure (timeout,
+    non-200, or response shape change).
+    """
+    payload = {
+        _DOSE_API_KEY_LANG: lang,
+        _DOSE_API_KEY_QUNIT: "l",
+        _DOSE_API_KEY_QUANTITY: str(tank_volume_l),
+        _DOSE_API_KEY_VALUE: str(measured_value),
+        # The API parses the leading numeric out of whatever string we
+        # send, so "12 µg/l" works the same as "12".
+        _DOSE_API_KEY_SETPOINT: setpoint.split()[0] if setpoint else "",
+        _DOSE_API_KEY_ELEMENT: element_identifier,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "https://www.triton-lab.de",
+        "User-Agent": USER_AGENT,
+    }
+    timeout = aiohttp.ClientTimeout(total=10)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                TRITON_DOSE_API_URL, json=payload, headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    _LOGGER.warning(
+                        "Triton dose API returned %d for %s: %s",
+                        resp.status, element_identifier, await resp.text(),
+                    )
+                    return None
+                data = await resp.json()
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning(
+            "Triton dose API call failed for %s: %s",
+            element_identifier, exc,
+        )
+        return None
+
+    if not isinstance(data, dict) or not data.get("status"):
+        _LOGGER.warning(
+            "Triton dose API returned non-success for %s: %s",
+            element_identifier, data,
+        )
+        return None
+    results = data.get("data", {}).get("results", {})
+    # `fix_elem_once` is the human-readable corrective-dose sentence;
+    # `var_fix_elem_once_short` is a shorter "Total of X for Y" form.
+    return results.get("fix_elem_once") or results.get("var_fix_elem_once_short")
+
+
+def _setpoint_for_habitat(
+    rendered_setpoint: str | None,
+    element_symbol: str,
+    habitat: str | None,
+) -> str | None:
+    """Return the setpoint to use for `element_symbol` under `habitat`.
+
+    For P and TNb, Triton hardcodes per-habitat overrides in eval.js —
+    use those (`TRITON_PER_HABITAT_SETPOINTS`). For other elements, the
+    rendered setpoint from the page is the same across habitats — fall
+    back to it.
+    """
+    if habitat and element_symbol in ("P", "TNb"):
+        per_h = TRITON_PER_HABITAT_SETPOINTS.get(habitat, {})
+        if element_symbol in per_h:
+            return per_h[element_symbol]
+    return rendered_setpoint
+
+
 async def _record_report(
-    coordinator: ReefDataCoordinator, report: ParsedReport,
+    coordinator: ReefDataCoordinator,
+    report: ParsedReport,
+    *,
+    active_habitat: str | None = None,
+    active_problem: str | None = None,
 ) -> tuple[int, list[str]]:
     """Push a ParsedReport into the coordinator.
 
     Records each known element as a `record_reading` with `source=icp`,
-    then stashes the full test_record. Returns (count_imported, skipped_symbols).
+    then stashes the full test_record. `active_habitat`/`active_problem`
+    capture the user's CHOSEN scenario (which may differ from what Triton
+    rendered at share time); the dosing-plan dashboard reads these.
+    Returns (count_imported, skipped_symbols).
     """
     sample_at = f"{report.sample_date}T08:00:00+00:00"
     skipped: list[str] = []
@@ -479,8 +710,13 @@ async def _record_report(
         "imported_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "source": "triton-url",
         "url": report.raw_url,
+        # share-time render context (what Triton's page showed):
         "selected_habitat": report.selected_habitat,
         "selected_problem": report.selected_problem,
+        # user's chosen scenario for the dosing plan (may differ if the
+        # user picked a different habitat/problem at import time):
+        "active_habitat": active_habitat or report.selected_habitat,
+        "active_problem": active_problem or report.selected_problem,
         "elements": elements_blob,
         "recommendations": recommendations_blob,
     }
@@ -512,20 +748,37 @@ async def import_triton_url(
     coordinator: ReefDataCoordinator,
     url: str,
     sample_date: str | None = None,
+    habitat: str | None = None,
+    problem: str | None = None,
 ) -> dict[str, Any]:
-    """Top-level orchestration. Fetch → parse → record.
+    """Top-level orchestration. Fetch → parse → filter → record.
 
-    `sample_date` (ISO `YYYY-MM-DD`) is optional. If omitted, defaults
-    to today (UTC date) with a logged warning — Triton's public
-    showroom HTML doesn't expose the actual sample date, so the user
-    should pass it explicitly when the test isn't fresh.
+    `sample_date` (ISO `YYYY-MM-DD`): optional, defaults to today (UTC)
+    with a logged warning. Triton's public showroom HTML doesn't expose
+    the actual sample date.
+
+    `habitat` / `problem`: optional. If omitted, defaults to the user's
+    current tank state from `select.reef_tank_habitat` / `_problem`. If
+    both are provided AND the embedded rule library is available, we
+    filter the dose recommendations to those that apply to that
+    (habitat × problem) combo. Otherwise we record everything.
+
+    Re-importing the SAME url with a different (habitat, problem) is
+    fine — it overwrites the test_record's `recommendations` /
+    `selected_habitat` / `selected_problem` fields, which is the
+    "change scenarios" workflow Jordan wants. The element analyses
+    don't change, just the filtered recommendations.
 
     Returns a summary dict suitable for logs + UI feedback:
         {
           "test_id": "triton-229019",
           "sample_date": "2026-04-16",
+          "habitat": "LPS Dominant",
+          "problem": "Cyanobacteria",
           "imported": 32,
           "skipped_symbols": [],
+          "recommendations_active": 8,
+          "recommendations_filtered_out": 3,
         }
 
     Raises ParserError on parse failure with a debug-bundle path
@@ -570,12 +823,85 @@ async def import_triton_url(
             today,
         )
 
-    imported, skipped = await _record_report(coordinator, report)
+    # Resolve habitat / problem — service-arg or fall back to tank state.
+    if habitat is None:
+        habitat = coordinator.tank.get("habitat")
+    if problem is None:
+        problem = coordinator.tank.get("problem")
+    if habitat:
+        report.selected_habitat = habitat
+    if problem:
+        report.selected_problem = problem
+
+    # Recompute habitat-sensitive dose amounts via Triton's public
+    # :1024 API. Only P and TNb actually have per-habitat setpoint
+    # differences (per eval.js). For other elements, the setpoint is
+    # the same across habitats and the rendered dose still applies.
+    #
+    # If `habitat` differs from the share-time rendered habitat, we
+    # also recompute Ca/Mg/etc. against the rendered setpoints — that's
+    # idempotent (same setpoint → same dose) but lets the test record
+    # carry "this is the dose for habitat X" with confidence.
+    recalc_count = 0
+    if habitat:
+        # Tank volume: prefer the alk advisor's configured value
+        # (the user's true tank volume), else default to 425 L.
+        from .alk_advisor import OPT_TANK_VOLUME_L, _opt
+        try:
+            tank_volume = float(_opt(coordinator, OPT_TANK_VOLUME_L) or 425.0)
+        except (TypeError, ValueError):
+            tank_volume = 425.0
+
+        # Build a quick map of rendered setpoints per element so we can
+        # look up "what setpoint did the page show".
+        rendered_setpoints: dict[str, str | None] = {
+            el.symbol: el.setpoint for el in report.elements
+        }
+
+        for rec in report.recommendations:
+            # Find the measured value from the elements list.
+            measured = next(
+                (el.analysis for el in report.elements if el.symbol == rec.symbol),
+                None,
+            )
+            if measured is None:
+                continue
+            sp = _setpoint_for_habitat(
+                rendered_setpoints.get(rec.symbol), rec.symbol, habitat,
+            )
+            if not sp:
+                continue
+            new_dose = await call_triton_dose_api(
+                element_identifier=rec.symbol,
+                measured_value=measured,
+                setpoint=sp,
+                tank_volume_l=tank_volume,
+            )
+            if new_dose:
+                rec.corrective_dose = new_dose
+                recalc_count += 1
+        _LOGGER.info(
+            "Triton dose recalc for habitat=%r: %d/%d elements updated "
+            "(tank_volume=%s L)",
+            habitat, recalc_count, len(report.recommendations), tank_volume,
+        )
+
+    imported, skipped = await _record_report(
+        coordinator, report,
+        active_habitat=habitat,
+        active_problem=problem,
+    )
     summary = {
         "test_id": report.test_id,
         "sample_date": report.sample_date,
+        "habitat": habitat,
+        "problem": problem,
+        "rendered_for_habitat": report.selected_habitat,
+        "rendered_for_problem": report.selected_problem,
         "imported": imported,
         "skipped_symbols": skipped,
+        "recommendations": len(report.recommendations),
+        "recalc_via_api": recalc_count,
     }
     _LOGGER.info("Triton import complete: %s", summary)
     return summary

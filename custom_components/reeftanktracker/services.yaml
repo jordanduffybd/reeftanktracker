@@ -443,8 +443,11 @@ import_triton_url:
   name: Import Triton ICP test (URL)
   description: >
     Fetch a public Triton showroom URL, parse the ICP-OES report, and
-    record per-element readings + the full test record. Idempotent —
-    re-running with the same URL is a no-op (dedupe by test_id).
+    record per-element readings + the full test record + habitat-
+    filtered dose recommendations. Re-run with a different habitat or
+    problem to see a different scenario from the same URL — no need
+    to re-share from Triton's site. The integration filters
+    recommendations using Triton's embedded ECS rule library.
     On parse failure, an HTML + parse-trace bundle is dumped to
     `<config>/.storage/icpimport_debug/<timestamp>/` for diagnosis.
   fields:
@@ -468,6 +471,42 @@ import_triton_url:
       example: "2026-04-16"
       selector:
         text:
+    habitat:
+      name: Habitat
+      description: >
+        Tank biotope. Defaults to the tank's current habitat
+        (`select.reef_tank_habitat`). Recommendations are filtered to
+        what Triton flags as relevant for this habitat × problem.
+      example: "LPS Dominant"
+      selector:
+        select:
+          options:
+            - SPS Outer Reef
+            - SPS Inner Reef
+            - Mixed Reef
+            - LPS Dominant
+            - Soft Coral Dominant
+            - Reef Aquarium with Clam
+            - Fish Only
+            - NPS (Filter Feeders)
+            - Seagrass
+    problem:
+      name: Problem
+      description: >
+        Current tank issue. Defaults to the tank's current problem
+        (`select.reef_tank_problem`). Use "None" for routine imports.
+      example: "Cyanobacteria"
+      selector:
+        select:
+          options:
+            - None
+            - Cyanobacteria
+            - RTN
+            - STN
+            - Poor growth
+            - Poor colour
+            - Mortality
+            - Nuisance Algae
 
 log_water_change:
   name: Log Water Change

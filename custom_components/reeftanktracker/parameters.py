@@ -143,24 +143,6 @@ INPUT_PARAMETERS: list[ParameterDef] = [
         "test_cadence_days": 1,
         "input_only": True,
     },
-    {
-        "id": "iodine", "name": "Iodine", "unit": "ppm", "icon": "mdi:atom",
-        "group": "trace",
-        "min": 0, "max": 0.2, "step": 0.001, "precision": 3,
-        "default_target_min": 0.03, "default_target_max": 0.09,
-        "common_methods": ["Salifert"],
-        "test_cadence_days": 30,
-        "input_only": True,
-    },
-    {
-        "id": "strontium", "name": "Strontium", "unit": "ppm", "icon": "mdi:atom",
-        "group": "trace",
-        "min": 0, "max": 20, "step": 0.1, "precision": 1,
-        "default_target_min": 8, "default_target_max": 12,
-        "common_methods": ["Salifert"],
-        "test_cadence_days": 30,
-        "input_only": True,
-    },
 ]
 
 # Parameters populated by the ICP importer only — no user-facing entry,
@@ -199,6 +181,8 @@ ICP_ONLY_PARAMETERS: list[ParameterDef] = [
     {"id": "chromium", "name": "Chromium", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
     {"id": "cobalt", "name": "Cobalt", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
     {"id": "iron", "name": "Iron", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
+    {"id": "iodine", "name": "Iodine", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
+    {"id": "strontium", "name": "Strontium", "unit": "mg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
     {"id": "barium", "name": "Barium", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 1, "icp_only": True},
     {"id": "beryllium", "name": "Beryllium", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 2, "icp_only": True},
     {"id": "silicon", "name": "Silicon", "unit": "µg/l", "icon": "mdi:atom-variant", "group": "trace", "precision": 0, "icp_only": True},

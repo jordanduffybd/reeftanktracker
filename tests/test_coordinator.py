@@ -159,6 +159,39 @@ async def test_icp_test_dedupes_by_test_id(hass):
 
 
 @pytest.mark.asyncio
+async def test_latest_icp_test_returns_most_recent_by_imported_at(hass):
+    """The dosing-plan sensor reads `latest_icp_test` — must return the
+    record with the highest `imported_at`, regardless of insertion order."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    older = {
+        "test_id": "T-OLDER", "sample_date": "2026-04-01",
+        "imported_at": "2026-04-01T10:00:00+00:00",
+        "elements": {}, "recommendations": [],
+    }
+    newer = {
+        "test_id": "T-NEWER", "sample_date": "2026-05-01",
+        "imported_at": "2026-05-06T10:00:00+00:00",
+        "elements": {}, "recommendations": [],
+    }
+    # Insert newer first to prove the sort works regardless of order.
+    await coord.async_record_icp_test(newer)
+    await coord.async_record_icp_test(older)
+
+    latest = coord.latest_icp_test
+    assert latest is not None
+    assert latest["test_id"] == "T-NEWER"
+
+
+@pytest.mark.asyncio
+async def test_latest_icp_test_returns_none_when_empty(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    assert coord.latest_icp_test is None
+
+
+@pytest.mark.asyncio
 async def test_icp_record_requires_test_id(hass):
     coord = ReefDataCoordinator(hass)
     await coord.async_load()

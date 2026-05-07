@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+Headline: **ICP importer** — paste a public Triton showroom URL, pick the habitat + problem you want plan guidance for, get habitat-aware dose recommendations recomputed via Triton's own dose-calc API, and act on them from a new Dosing Plan dashboard view.
+
+- **`reeftanktracker.import_triton_url` service:** ingests a public Triton showroom URL (e.g. `https://www.triton-lab.de/en/showroom/icp-oes/229019`), parses 39 element analyses + dose recommendations + the embedded ECS rule library + the share-time selected habitat/problem, writes element readings via `record_reading(source=icp)`, and persists the full test record (deduped by test_id). Deterministic parser — no LLM fallback.
+- **Habitat-aware dose recalc (Phase 1.5):** the service accepts optional `habitat` + `problem` arguments. For elements whose setpoint changes under the chosen habitat (currently only P / TNb per Triton's `eval.js`), we POST to Triton's public `:1024` API (`https://www.triton-lab.de:1024/api/eval_a/get_dosage_info`) and overwrite the rendered `corrective_dose` with the recomputed value. Tank volume comes from the alk advisor's `OPT_TANK_VOLUME_L` (default 425L). Other elements share one setpoint across habitats so their rendered dose is preserved.
+- **Active Dosing Plan sensor:** `sensor.reef_active_dosing_plan` exposes the most-recent ICP test's recommendations (importance-sorted, most-important first) plus the active habitat/problem/test_id metadata as attributes. State is the recommendation count.
+- **New "Dosing Plan" dashboard view:** surfaces the importance-sorted plan as a markdown card with star ratings + corrective-dose strings + product references, plus a summary card showing the active scenario (habitat, problem, test_id, sample_date, source URL). Re-running the import service with different habitat/problem arguments overwrites the active plan in place — useful when changing tank direction (e.g. Mixed Reef → SPS) or addressing a transient issue (e.g. Cyanobacteria).
+- **108 unit tests** — adds parser fixtures + ECS rule library extraction + per-habitat setpoint matrix coverage + `latest_icp_test` sort + setpoint-resolver pure tests. Real Triton showroom HTML fixture (795 KB, captured 2026-05-06) drives the parser tests.
+
+Phase 2 (habitat × problem matrix → recommended target ranges) and Phase 3 (full 39-element ICP test viewer dashboard) are deferred. Discovered the ECS rule-library identifier filter is a no-op for typical Triton data — every habitat × problem combo references ~43 element ids — so per-element setpoint recompute via the :1024 API is the only useful per-habitat differentiator.
+
 ## 0.3.0
 
 Headline: an **alkalinity dosing advisor** that watches your KH against a target band, your alk doser's programmed daily dose, and a rolling 7-day window of snapshots — and suggests a small daily-dose change when it sees a persistent drift. Recommendation-only in v1 (never writes to your doser). Built around five user-stated stability rules: median over window (no reaction to single readings), trends only (must be persistently outside the band), cooldown after each acknowledged change, ±10 % step cap, and a confidence gate that downgrades to "low" when the KH source's calibration is overdue.

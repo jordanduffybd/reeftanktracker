@@ -169,6 +169,11 @@ IMPORT_TRITON_URL_SCHEMA = vol.Schema({
     # Pass it explicitly (ISO YYYY-MM-DD) for older imports; defaults
     # to today otherwise.
     vol.Optional("sample_date"): cv.string,
+    # habitat + problem default to the tank's current state. Pass
+    # explicitly to filter the test's recommendations to a different
+    # scenario (no need to re-share the URL from Triton).
+    vol.Optional("habitat"): vol.In(HABITATS),
+    vol.Optional("problem"): vol.In(PROBLEMS),
 })
 
 
@@ -458,9 +463,14 @@ async def _async_register_services(
         from .icp_importer import import_triton_url, ParserError
         url = call.data["url"]
         sample_date = call.data.get("sample_date")
+        habitat = call.data.get("habitat")
+        problem = call.data.get("problem")
         try:
             summary = await import_triton_url(
-                hass, coordinator, url, sample_date=sample_date,
+                hass, coordinator, url,
+                sample_date=sample_date,
+                habitat=habitat,
+                problem=problem,
             )
         except ParserError as exc:
             _LOGGER.error(

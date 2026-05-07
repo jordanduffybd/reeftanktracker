@@ -7,9 +7,14 @@ Per parameter we expose:
   sensor.reef_<id>_days_since     — days since last MANUAL test
   sensor.reef_<id>_drift          — manual − auto, when both are fresh
 
-Plus two tank-level sensors:
-  sensor.reef_tank_habitat        — current habitat selection
-  sensor.reef_tank_problem        — current problem selection
+Tank-level sensors:
+  sensor.reef_alk_advisor_recommendation  — alk dosing advisor
+  sensor.reef_active_dosing_plan          — last ICP test's dose plan
+                                            (state = sample timestamp)
+
+Habitat and problem are exposed via the `select` platform only —
+they're tappable to change. The redundant read-only sensors were
+removed in 0.4.0.
 """
 from __future__ import annotations
 
@@ -38,7 +43,7 @@ from .const import (
     DEVICE_NAME,
     DOMAIN,
     SIGNAL_ADVISOR_UPDATED,
-    SIGNAL_HABITAT_CHANGED,
+    SIGNAL_ICP_TEST_RECORDED,
     SIGNAL_READING_RECORDED,
 )
 from .coordinator import ReefDataCoordinator
@@ -67,18 +72,24 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = []
     for param in ALL_PARAMETERS:
+        # ICP-only params get just the value + sample timestamp.
+        # Drift / days-since-test / last-method are meaningless for
+        # parameters that only ever have one source (ICP imports), so
+        # they're not registered for those.
         entities.extend([
             ReefLatestSensor(coordinator, param),
-            ReefLatestMethodSensor(coordinator, param),
             ReefLatestAtSensor(coordinator, param),
-            ReefDaysSinceSensor(coordinator, param),
-            ReefDriftSensor(coordinator, param),
         ])
+        if not param.get("icp_only"):
+            entities.extend([
+                ReefLatestMethodSensor(coordinator, param),
+                ReefDaysSinceSensor(coordinator, param),
+                ReefDriftSensor(coordinator, param),
+            ])
 
     entities.extend([
-        TankHabitatSensor(coordinator),
-        TankProblemSensor(coordinator),
         AlkAdvisorSensor(coordinator),
+        DosingPlanSensor(coordinator),
     ])
 
     async_add_entities(entities)
@@ -97,11 +108,14 @@ class _ReefSensorBase(SensorEntity):
         self._coordinator = coordinator
         self._param = param
         self._attr_unique_id = f"reef_{param['id']}_{suffix}"
-        # Entity name combines parameter + variant (e.g. "KH Latest")
-        # With has_entity_name=True the actual entity_id becomes
-        # `sensor.reef_tank_<param>_<variant>`, derived from the device
-        # name "Reef Tank" + the entity name.
-        self._attr_name = f"{param['name']} {name}"
+        # Entity name combines parameter + variant (e.g. "KH Latest").
+        # ICP-only parameters get an "ICP" prefix in the name so they're
+        # visually distinct from home-testable parameters in the entity
+        # list and dashboards (e.g. "ICP Cadmium Latest" vs "Calcium
+        # Latest"). The entity_id picks up the prefix too:
+        # `sensor.reef_tank_icp_cadmium_latest`.
+        prefix = "ICP " if param.get("icp_only") else ""
+        self._attr_name = f"{prefix}{param['name']} {name}"
         self._attr_icon = param.get("icon", "mdi:water")
 
     async def async_added_to_hass(self) -> None:
@@ -276,46 +290,6 @@ class ReefDriftSensor(_ReefSensorBase):
         return _round(manual["value"] - auto_val, self._param.get("precision"))
 
 
-# ---------------------------------------------------------------------------
-# Tank-level sensors
-# ---------------------------------------------------------------------------
-class _TankSensor(SensorEntity):
-    _attr_should_poll = False
-    _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_device_info = _device_info()
-
-    def __init__(self, coordinator: ReefDataCoordinator) -> None:
-        self._coordinator = coordinator
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, SIGNAL_HABITAT_CHANGED, self.async_write_ha_state
-            )
-        )
-
-
-class TankHabitatSensor(_TankSensor):
-    _attr_unique_id = "reef_tank_habitat"
-    _attr_name = "Tank Habitat"
-    _attr_icon = "mdi:waves"
-
-    @property
-    def native_value(self) -> str:
-        return self._coordinator.tank.get("habitat")
-
-
-class TankProblemSensor(_TankSensor):
-    _attr_unique_id = "reef_tank_problem"
-    _attr_name = "Tank Problem"
-    _attr_icon = "mdi:alert-circle-outline"
-
-    @property
-    def native_value(self) -> str:
-        return self._coordinator.tank.get("problem")
-
-
 def _round(value: float | None, precision: int | None) -> float | None:
     if value is None:
         return None
@@ -397,3 +371,75 @@ class AlkAdvisorSensor(SensorEntity):
         )
         attrs["kh_source_entity"] = cfg.get(alk_advisor.OPT_KH_SOURCE) or ""
         return attrs
+
+
+# ---------------------------------------------------------------------------
+# Dosing-plan sensor — surfaces the most recent ICP test's habitat-aware
+# dose recommendations as importance-sorted attributes for the dashboard.
+# ---------------------------------------------------------------------------
+class DosingPlanSensor(SensorEntity):
+    """`sensor.reef_active_dosing_plan` — timestamp of the most recent ICP
+    test's sample collection date.
+
+    State is the sample-date timestamp (TIMESTAMP device class) so the HA
+    UI shows "Last test: X days ago" rather than "updated 5 minutes ago"
+    (which would reflect import time, not when the sample was actually
+    taken). The full importance-sorted dose plan + active habitat/problem
+    + test metadata live in attributes for dashboard cards to render.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_info = _device_info()
+    _attr_icon = "mdi:beaker-plus-outline"
+    _attr_unique_id = "reef_active_dosing_plan"
+    _attr_name = "Active Dosing Plan"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: ReefDataCoordinator) -> None:
+        self._coordinator = coordinator
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_ICP_TEST_RECORDED, self.async_write_ha_state
+            )
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        test = self._coordinator.latest_icp_test
+        if test is None:
+            return None
+        date_str = test.get("sample_date")
+        if not date_str:
+            return None
+        try:
+            # Sample is dated at midnight UTC of the collection day —
+            # we don't know the actual sampling time of day, only the
+            # date shown on the report.
+            return datetime.fromisoformat(f"{date_str}T00:00:00+00:00")
+        except ValueError:
+            return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        test = self._coordinator.latest_icp_test
+        if test is None:
+            return {"status": "No ICP test imported yet."}
+        recs = sorted(
+            test.get("recommendations") or [],
+            key=lambda r: -(r.get("importance_stars") or 0),
+        )
+        return {
+            "test_id": test.get("test_id"),
+            "sample_date": test.get("sample_date"),
+            "imported_at": test.get("imported_at"),
+            "active_habitat": test.get("active_habitat"),
+            "active_problem": test.get("active_problem"),
+            "rendered_for_habitat": test.get("selected_habitat"),
+            "rendered_for_problem": test.get("selected_problem"),
+            "url": test.get("url"),
+            "recommendations_count": len(recs),
+            "recommendations": recs,
+        }

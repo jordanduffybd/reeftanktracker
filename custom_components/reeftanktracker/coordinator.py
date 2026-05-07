@@ -52,6 +52,7 @@ from .const import (
     SIGNAL_ADVISOR_FORM_CHANGED,
     SIGNAL_ADVISOR_UPDATED,
     SIGNAL_HABITAT_CHANGED,
+    SIGNAL_ICP_TEST_RECORDED,
     SIGNAL_INVENTORY_CHANGED,
     SIGNAL_READING_RECORDED,
     SOURCE_AUTO,
@@ -596,10 +597,19 @@ class ReefDataCoordinator:
         ]
         self._data["icp_tests"].append(test_record)
         await self.async_save()
+        async_dispatcher_send(self.hass, SIGNAL_ICP_TEST_RECORDED)
 
     @property
     def icp_tests(self) -> list[dict[str, Any]]:
         return self._data["icp_tests"]
+
+    @property
+    def latest_icp_test(self) -> dict[str, Any] | None:
+        """Most recently imported ICP test (by `imported_at`)."""
+        tests = self._data.get("icp_tests") or []
+        if not tests:
+            return None
+        return max(tests, key=lambda t: t.get("imported_at") or "")
 
     # ------------------------------------------------------------------
     # Advisor state (per-parameter — currently only KH is implemented)
