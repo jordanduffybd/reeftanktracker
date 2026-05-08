@@ -55,7 +55,7 @@
           "advisor_calcium_correction_period_days": "Spread the correction over (days)"
         },
         "data_description": {
-          "advisor_calcium_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses Calcium (e.g. `sensor.rsdose4_<serial>_head_<N>_daily_dose`). NOT `_auto_dosed_today` (today's actual dose) and NOT `_supplement` (the supplement label). Multiple heads are summed.",
+          "advisor_calcium_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses Calcium (e.g. `sensor.rsdose4_SERIAL_head_N_daily_dose`). NOT `_auto_dosed_today` (today's actual dose) and NOT `_supplement` (the supplement label). Multiple heads are summed.",
           "advisor_calcium_supplement_profile": "Pick a Calcium-targeting profile registered via `add_supplement_profile` (e.g. Red Sea Foundation A). Use 'Custom' to enter a manual potency below.",
           "advisor_calcium_spec_efficiency": "Vendor-published potency. Foundation A = 2 ppm Ca raise per mL per 100L tank volume. Used when 'Custom' is selected above, or as fallback for profiles without a stored potency.",
           "advisor_calcium_target_min": "SPS-friendly default 420 ppm. Holmes-Farley says 380–450 is fine for any reef; widen for LPS-dominant tanks.",
