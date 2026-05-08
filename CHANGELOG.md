@@ -2,6 +2,39 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.4.2 — inline ICP import form on the Dosing Plan dashboard
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+Replaces the "go to Developer Tools → Actions to import a Triton ICP" workflow with an inline form on the Dosing Plan dashboard view. Mirrors the existing water-change / demand-change form pattern.
+
+**New form entities:**
+- `text.reef_advisor_form_icp_url` — Triton showroom URL
+- `select.reef_advisor_form_icp_habitat` — habitat dropdown (defaults to current tank habitat)
+- `select.reef_advisor_form_icp_problem` — problem dropdown (defaults to current tank problem)
+- `text.reef_advisor_form_icp_sample_date` — optional ISO-format date (`YYYY-MM-DD`); blank → service defaults to today UTC
+
+**New service:** `reeftanktracker.submit_icp_import_form` — reads the four form entity states server-side and forwards to `import_triton_url`. Raises `HomeAssistantError` if the URL field is blank. Habitat/problem fall back to the persistent tank state if not changed in the form, so the user just types a URL and clicks Import for the common case.
+
+**Dashboard layout:** the Dosing Plan view now has a 3-column section with the import form on the left, the active scenario summary in the middle, and the help card on the right. Below that, the dose plan markdown card spans the full width. The `Last test taken` headline tile remains at the top.
+
+The `import_triton_url` service is unchanged and still callable from Developer Tools for power users / scripting.
+
+## 0.4.1 — alk advisor activity log on the dashboard
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+Adds an "Activity log" section at the bottom of the Alk Advisor dashboard view showing the last 7 days of:
+
+- Acknowledgements + dismissals of the dosing recommendation
+- Water-change and demand-change events the user logged
+- Manual snapshot captures
+- KH Keeper drop-test calibration changes (state changes on `number.kh_keeper_calibrate_kh_from_drop_test` and `sensor.kh_keeper_kh_adjustment`)
+
+Implementation: HA Logbook card filtered to the alk advisor sensor (the integration already fires `logbook_entry` events tagged to that sensor for every user action) plus the two KH Keeper calibration entities. No new code paths — purely surfaces what's already being recorded.
+
+After install, the integration's auto-installed dashboard regenerates and the new section appears at the bottom of the Alk Advisor view. No restart-blocking changes.
+
 ## 0.4.0 — ICP importer + Dosing Plan view + sensor/parameter cleanup
 
 **Tested against:** HA Core `2026.4.4` (dev + prod), Supervisor `2026.04.2`, HAOS `17.2`.

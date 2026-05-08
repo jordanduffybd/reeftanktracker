@@ -712,6 +712,28 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
         ),
     }
 
+    # Event log card. The integration fires `logbook_entry` events
+    # tagged to the advisor sensor's entity_id for every user action
+    # (acknowledge, dismiss, water change, demand change, manual
+    # snapshot). Tracking the advisor sensor catches them all.
+    #
+    # KH Keeper calibration is external (kh-keeper-bridge MQTT-
+    # discovered), so we add the calibrate input + adjustment sensor
+    # explicitly. State changes on `number.kh_keeper_calibrate_kh_from_
+    # drop_test` and `sensor.kh_keeper_kh_adjustment` show up as
+    # standard state-change logbook entries.
+    log_entities = [
+        advisor_eid,
+        "number.kh_keeper_calibrate_kh_from_drop_test",
+        "sensor.kh_keeper_kh_adjustment",
+    ]
+    event_log_card = {
+        "type": "logbook",
+        "title": "Recent activity",
+        "hours_to_show": 168,  # 7 days
+        "entities": log_entities,
+    }
+
     return {
         "title": "Alk Advisor",
         "path": "alk-advisor",
@@ -760,6 +782,15 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                 "type": "grid",
                 "column_span": 1,
                 "cards": [help_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Activity log",
+                     "icon": "mdi:history"},
+                    event_log_card,
+                ],
             },
         ],
     }
@@ -844,20 +875,57 @@ def _build_dosing_plan_view(uid_map: dict[str, str]) -> dict[str, Any]:
     help_card = {
         "type": "markdown",
         "content": (
-            "**Importing / re-importing:** call "
-            "`reeftanktracker.import_triton_url` from Developer Tools → "
-            "Actions with your Triton showroom URL plus the habitat and "
-            "problem you want the plan computed for. Re-running with "
-            "different inputs overwrites the active plan — useful if "
-            "you're changing tank direction (e.g. Mixed Reef → SPS) or "
-            "have a transient issue (e.g. Cyanobacteria) and want plan "
-            "guidance.\n\n"
+            "**Importing / re-importing:** fill in the form on the right "
+            "(URL is required; habitat + problem default to your current "
+            "tank state; sample date defaults to today if blank). Click "
+            "Import → the plan re-renders below with the dose "
+            "recommendations recomputed for that habitat. Re-running "
+            "with different inputs overwrites the active plan — useful "
+            "if you're changing tank direction (e.g. Mixed Reef → SPS) "
+            "or have a transient issue (e.g. Cyanobacteria).\n\n"
             "**Manual programming:** for high-volume supplements, take "
             "the corrective-dose string above and split it across the "
             "RSDOSE4 head schedule (e.g. \"17.12 ml for 1 day\" → 17 ml "
             "spread over the day). The advisor view handles alkalinity "
             "trend-based daily-dose tuning separately."
         ),
+    }
+
+    # Inline import form. Mirrors the water-change / demand-change form
+    # pattern from the alk advisor view: form fields are real entities
+    # (text/select) owned by this integration, the user fills them in,
+    # the Submit button calls submit_icp_import_form which reads each
+    # entity's state server-side and forwards to import_triton_url.
+    icp_url_eid = _eid(uid_map, "reef_advisor_form_icp_url", "text")
+    icp_habitat_eid = _eid(
+        uid_map, "reef_advisor_form_icp_habitat", "select",
+    )
+    icp_problem_eid = _eid(
+        uid_map, "reef_advisor_form_icp_problem", "select",
+    )
+    icp_sample_date_eid = _eid(
+        uid_map, "reef_advisor_form_icp_sample_date", "text",
+    )
+    import_form = {
+        "type": "entities",
+        "title": "Import a Triton ICP test",
+        "show_header_toggle": False,
+        "entities": [
+            {"entity": icp_url_eid,
+             "name": "Triton URL (e.g. https://www.triton-lab.de/en/showroom/icp-oes/229019)"},
+            {"entity": icp_habitat_eid, "name": "Habitat"},
+            {"entity": icp_problem_eid, "name": "Problem"},
+            {"entity": icp_sample_date_eid,
+             "name": "Sample date (YYYY-MM-DD, blank = today)"},
+            {
+                "type": "call-service",
+                "name": "Import — fetch + parse + recompute doses",
+                "icon": "mdi:cloud-download",
+                "action_name": "Import",
+                "service": "reeftanktracker.submit_icp_import_form",
+                "service_data": {},
+            },
+        ],
     }
 
     return {
@@ -879,16 +947,35 @@ def _build_dosing_plan_view(uid_map: dict[str, str]) -> dict[str, Any]:
             },
             {
                 "type": "grid",
-                "column_span": 2,
+                "column_span": 1,
                 "cards": [
+                    {"type": "heading", "heading": "Import a new ICP",
+                     "icon": "mdi:cloud-download"},
+                    import_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [
+                    {"type": "heading", "heading": "Active scenario",
+                     "icon": "mdi:beaker-outline"},
                     summary_card,
-                    plan_card,
                 ],
             },
             {
                 "type": "grid",
                 "column_span": 1,
                 "cards": [help_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Dose plan",
+                     "icon": "mdi:beaker-plus-outline"},
+                    plan_card,
+                ],
             },
         ],
     }
