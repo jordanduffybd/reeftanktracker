@@ -522,85 +522,120 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
     """Alk dosing advisor — recommendation, controls, calculation details."""
     advisor_eid = _eid(uid_map, "reef_alk_advisor_recommendation")
 
-    # Top tile: the headline recommendation
+    # Headline card. Two conditional variants stacked: a markdown
+    # "advisor paused" banner when state is unknown/unavailable (e.g.
+    # ReefBeat doser offline for maintenance), and the regular tile
+    # showing the suggested-dose number when state is a real value.
+    # This stops the prod dashboard from showing "Suggested daily
+    # dose: Unknown" with no context when devices are off — instead
+    # the user sees the actionable reason text large + prominent.
     headline_card = {
-        "type": "tile",
-        "entity": advisor_eid,
-        "name": "Suggested daily dose",
-        "icon": "mdi:test-tube",
-        "vertical": True,
-        "state_content": ["state", "last-changed"],
+        "type": "vertical-stack",
+        "cards": [
+            {
+                "type": "conditional",
+                "conditions": [
+                    {"condition": "state", "entity": advisor_eid,
+                     "state": ["unknown", "unavailable"]},
+                ],
+                "card": {
+                    "type": "markdown",
+                    "content": (
+                        "## ⏸️ Advisor paused\n\n"
+                        "{{ state_attr('" + advisor_eid + "', 'reason') "
+                        "or 'No reason recorded.' }}\n\n"
+                        "_Reason last updated "
+                        "{{ relative_time(states['" + advisor_eid + "'].last_changed) "
+                        "if states['" + advisor_eid + "'] else 'unknown' }}._"
+                    ),
+                },
+            },
+            {
+                "type": "conditional",
+                "conditions": [
+                    {"condition": "state", "entity": advisor_eid,
+                     "state_not": "unknown"},
+                    {"condition": "state", "entity": advisor_eid,
+                     "state_not": "unavailable"},
+                ],
+                "card": {
+                    "type": "tile",
+                    "entity": advisor_eid,
+                    "name": "Suggested daily dose",
+                    "icon": "mdi:test-tube",
+                    "vertical": True,
+                    "state_content": ["state", "last-changed"],
+                },
+            },
+        ],
     }
 
-    # Show-your-work attributes — quick reference
+    # Show-your-work card. Renders attribute rows ONLY when the
+    # underlying value is meaningful (not None / "unknown" / empty).
+    # When ReefBeat is offline the algorithm returns None for most
+    # values; previously this card showed ~20 rows of "Unknown" which
+    # looked broken. The markdown template skips empty rows so the
+    # card naturally collapses to whatever IS known.
+    #
+    # We render the full breakdown when state is a number AND the
+    # actionable reason when state is unknown — same content surface,
+    # different shape. Constants stay always-visible (target band,
+    # spec efficiency source, etc.) since those are config not
+    # computed.
     attributes_card = {
-        "type": "entities",
-        "title": "Show your work",
-        "show_header_toggle": False,
-        "entities": [
-            {"type": "attribute", "entity": advisor_eid, "name": "KH median",
-             "attribute": "kh_median"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Target band low",
-             "attribute": "target_min"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Target band high",
-             "attribute": "target_max"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Current dose (mL/day)",
-             "attribute": "current_dose_mL"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Suggested dose (mL/day)",
-             "attribute": "suggested_dose_mL"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Change (mL)",
-             "attribute": "change_mL"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Change (%)",
-             "attribute": "change_pct"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Confidence",
-             "attribute": "confidence"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Reason",
-             "attribute": "reason"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Cooldown until",
-             "attribute": "cooldown_until"},
-            {"type": "attribute", "entity": advisor_eid, "name": "Calibration warning",
-             "attribute": "calibration_warning"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Last demand change", "attribute": "last_demand_change_at"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Days since demand change",
-             "attribute": "days_since_demand_change"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Observed slope (dKH/day)",
-             "attribute": "observed_slope_dkh_per_day"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Spec efficiency (dKH/mL)",
-             "attribute": "spec_efficiency_dkh_per_mL"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Supplement (auto-detected)",
-             "attribute": "detected_supplement_label"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Spec efficiency source",
-             "attribute": "spec_efficiency_source"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Empirical potency (dKH/mL)",
-             "attribute": "empirical_potency_dkh_per_mL"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Empirical / spec ratio",
-             "attribute": "empirical_to_spec_ratio"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Empirical basis",
-             "attribute": "empirical_potency_basis"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Spec drift warning",
-             "attribute": "spec_drift_warning"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Last water change",
-             "attribute": "last_water_change_at"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Days since water change",
-             "attribute": "days_since_water_change"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Samples excluded (WC settling)",
-             "attribute": "samples_excluded_for_wc"},
-            {"type": "attribute", "entity": advisor_eid,
-             "name": "Samples used", "attribute": "samples_used"},
-        ],
+        "type": "markdown",
+        "content": (
+            "{% set ent = '" + advisor_eid + "' %}"
+            "{% set s = states(ent) %}"
+            "{% set known = s not in ('unknown','unavailable','none','') %}"
+            "### Show your work\n\n"
+            "{% if not known %}"
+            "_Most computed values are unavailable while the advisor "
+            "is paused — see banner above. The configured target band "
+            "and supplement spec are still listed below._\n\n"
+            "{% endif %}"
+            "| | |\n|---|---|\n"
+            # Always-shown rows (config, not computed)
+            "| Target band | "
+            "{{ state_attr(ent, 'target_min') }} – "
+            "{{ state_attr(ent, 'target_max') }} dKH |\n"
+            "| Spec efficiency (dKH/mL) | "
+            "{{ state_attr(ent, 'spec_efficiency_dkh_per_mL') or '—' }} |\n"
+            "| Spec efficiency source | "
+            "{{ state_attr(ent, 'spec_efficiency_source') or '—' }} |\n"
+            "| Calibration warning | "
+            "{{ state_attr(ent, 'calibration_warning') }} |\n"
+            "| Confidence | "
+            "{{ state_attr(ent, 'confidence') or '—' }} |\n"
+            "| Reason | "
+            "{{ state_attr(ent, 'reason') or '—' }} |\n"
+            # Conditionally-shown computed rows — only when the value
+            # is non-null and not "Unknown"
+            "{% macro row(label, attr, suffix='') -%}"
+            "{% set v = state_attr(ent, attr) %}"
+            "{% if v is not none and v not in ('unknown','unavailable') %}"
+            "| {{ label }} | {{ v }}{{ suffix }} |\n"
+            "{% endif %}"
+            "{%- endmacro %}"
+            "{{ row('KH median', 'kh_median', ' dKH') }}"
+            "{{ row('Current dose (mL/day)', 'current_dose_mL') }}"
+            "{{ row('Suggested dose (mL/day)', 'suggested_dose_mL') }}"
+            "{{ row('Change (mL)', 'change_mL') }}"
+            "{{ row('Change (%)', 'change_pct') }}"
+            "{{ row('Observed slope (dKH/day)', 'observed_slope_dkh_per_day') }}"
+            "{{ row('Samples used', 'samples_used') }}"
+            "{{ row('Cooldown until', 'cooldown_until') }}"
+            "{{ row('Supplement (auto-detected)', 'detected_supplement_label') }}"
+            "{{ row('Empirical potency (dKH/mL)', 'empirical_potency_dkh_per_mL') }}"
+            "{{ row('Empirical / spec ratio', 'empirical_to_spec_ratio') }}"
+            "{{ row('Empirical basis', 'empirical_potency_basis') }}"
+            "{{ row('Spec drift warning', 'spec_drift_warning') }}"
+            "{{ row('Last demand change', 'last_demand_change_at') }}"
+            "{{ row('Days since demand change', 'days_since_demand_change') }}"
+            "{{ row('Last water change', 'last_water_change_at') }}"
+            "{{ row('Days since water change', 'days_since_water_change') }}"
+            "{{ row('Samples excluded (WC settling)', 'samples_excluded_for_wc') }}"
+        ),
     }
 
     # Action buttons — call services. We don't pre-fill the values; the

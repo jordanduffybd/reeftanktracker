@@ -6,6 +6,15 @@
 
 **Tested against:** HA Core `2026.4.4` (dev).
 
+### Alk advisor dashboard — graceful handling when devices are off
+
+The Alk Advisor view used to render ~20 rows of "Unknown" when ReefBeat dosers were offline (because the algorithm returns None for most computed values). The user-facing dashboard now adapts:
+
+- **Headline:** when state is `unknown` / `unavailable`, shows a "⏸️ Advisor paused" markdown banner with the actionable `reason` text large + prominent. When state is a real number, shows the regular suggested-daily-dose tile. (HA's `conditional` card switches between them automatically.)
+- **Show your work:** rebuilt as a markdown card that only renders rows whose value is meaningful (not None / "unknown" / empty). Always-shown rows (target band, spec efficiency, calibration warning, confidence, reason) stay visible since those are configuration, not computed. Computed rows (KH median, current dose, suggested dose, observed slope, samples used, etc.) appear only when populated.
+
+Result: when ReefBeat is off for maintenance, the dashboard collapses to a clean banner + 5 config rows instead of 20 rows of "Unknown". When ReefBeat returns, the full work breakdown appears automatically.
+
 ### Alk advisor robustness against transient ReefBeat outages
 
 Caught during the user's 2026-05-08 ReefBeat maintenance window: when the alk doser's `daily_dose` sensor went briefly unavailable during an integration reload, the advisor sensor returned `state=None` (rendered as "unknown" in HA) AND failed to auto-recover when the doser came back. Two fixes:
