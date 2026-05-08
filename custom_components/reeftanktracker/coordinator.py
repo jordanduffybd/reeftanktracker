@@ -789,7 +789,8 @@ class ReefDataCoordinator:
         return self._data.setdefault("supplement_profiles", [])
 
     async def async_add_supplement_profile(
-        self, *, label: str, eff_dkh_per_mL_per_100L: float,
+        self, *, label: str, eff_dkh_per_mL_per_100L: float | None = None,
+        param_id: str = "kh",
         label_patterns: list[str] | None = None, notes: str | None = None,
     ) -> dict[str, Any]:
         # Lazy import keeps coordinator import-time light and avoids a
@@ -797,18 +798,45 @@ class ReefDataCoordinator:
         from .alk_advisor import BUILTIN_PROFILES
         existing = self.supplement_profiles
         taken = set(BUILTIN_PROFILES) | {p["id"] for p in existing}
-        entry = {
+        entry: dict[str, Any] = {
             "id": _unique_slug(label, taken),
             "label": label,
-            "eff_dkh_per_mL_per_100L": float(eff_dkh_per_mL_per_100L),
+            # Stored as float when present, None for non-KH supplements
+            # whose potency the alk advisor never reads. Per-element
+            # advisors (0.5.0+) will introduce parameter-aware potency
+            # fields on profiles; for now this stays KH-shaped.
+            "eff_dkh_per_mL_per_100L": (
+                float(eff_dkh_per_mL_per_100L)
+                if eff_dkh_per_mL_per_100L is not None else None
+            ),
+            "param_id": param_id or "kh",
             "label_patterns": [p.lower() for p in (label_patterns or [])],
             "created_at": _now_iso(),
             "notes": notes,
         }
         existing.append(entry)
         await self.async_save()
-        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, "kh")
+        # Dispatch on the profile's actual target parameter — this lets
+        # per-element advisors (0.5.0+) listen for their own profile
+        # changes without recomputing on every alk profile add. The alk
+        # advisor still gets recomputed on param_id="kh" adds.
+        async_dispatcher_send(
+            self.hass, SIGNAL_ADVISOR_UPDATED, entry["param_id"],
+        )
         return entry
+
+    def supplement_profiles_for(self, param_id: str) -> list[dict[str, Any]]:
+        """Return user-added supplement profiles targeting `param_id`.
+
+        Profiles registered before the param_id field existed default
+        to "kh" so existing alk supplements keep working unchanged.
+        Per-element advisors (0.5.0+) call this with their own param_id
+        to find supplements that target their parameter.
+        """
+        return [
+            p for p in self.supplement_profiles
+            if p.get("param_id", "kh") == param_id
+        ]
 
     async def async_remove_supplement_profile(self, profile_id: str) -> None:
         existing = self.supplement_profiles

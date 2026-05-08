@@ -128,16 +128,48 @@ LOG_DEMAND_CHANGE_SCHEMA = vol.Schema({
     vol.Optional("magnitude_hint_pct"): vol.Coerce(float),
 })
 
-ADD_SUPPLEMENT_PROFILE_SCHEMA = vol.Schema({
-    vol.Required("label"): cv.string,
-    vol.Required("eff_dkh_per_mL_per_100L"): vol.All(
-        vol.Coerce(float), vol.Range(min=0.001, max=5.0),
-    ),
-    vol.Optional("label_patterns", default=[]): vol.All(
-        cv.ensure_list, [cv.string],
-    ),
-    vol.Optional("notes"): cv.string,
-})
+def _validate_supplement_profile(value: dict[str, Any]) -> dict[str, Any]:
+    """eff_dkh_per_mL_per_100L is required when the profile targets KH
+    (the alk advisor needs a real potency to compute dose changes).
+
+    For non-KH supplements (Ca / Mg / NO3 / PO4 / etc.) the field is
+    optional — those parameters use different units and the per-element
+    advisors arriving in 0.5.0 will introduce a parameter-aware
+    potency field. For now these profiles just carry label + notes and
+    serve as a registry the user can reference."""
+    param_id = value.get("param_id", "kh")
+    if param_id == "kh" and value.get("eff_dkh_per_mL_per_100L") is None:
+        raise vol.Invalid(
+            "eff_dkh_per_mL_per_100L is required for KH (alkalinity) "
+            "supplements — the alk advisor uses it to compute dose changes."
+        )
+    return value
+
+
+ADD_SUPPLEMENT_PROFILE_SCHEMA = vol.All(
+    vol.Schema({
+        vol.Required("label"): cv.string,
+        # Required-for-KH, optional-for-others — see _validate_supplement_profile.
+        # The vol.Any wrapper is what lets None / absent through; the
+        # post-schema validator enforces presence for KH profiles.
+        vol.Optional("eff_dkh_per_mL_per_100L"): vol.Any(
+            None,
+            vol.All(vol.Coerce(float), vol.Range(min=0.001, max=5.0)),
+        ),
+        # Which parameter this supplement targets. Default "kh" preserves
+        # back-compat — every existing profile (registered before this
+        # field existed) continues to be treated as a KH supplement, and
+        # the alk advisor's dropdown filters to param_id="kh".
+        # 0.5.0+ will add per-element advisors that filter to their own
+        # param_id (e.g. the Ca advisor reads param_id="calcium" supplements).
+        vol.Optional("param_id", default="kh"): cv.string,
+        vol.Optional("label_patterns", default=[]): vol.All(
+            cv.ensure_list, [cv.string],
+        ),
+        vol.Optional("notes"): cv.string,
+    }),
+    _validate_supplement_profile,
+)
 
 REMOVE_SUPPLEMENT_PROFILE_SCHEMA = vol.Schema({
     vol.Required("id"): cv.string,
@@ -423,14 +455,16 @@ async def _async_register_services(
     async def handle_add_supplement_profile(call: ServiceCall) -> None:
         entry = await coordinator.async_add_supplement_profile(
             label=call.data["label"],
-            eff_dkh_per_mL_per_100L=call.data["eff_dkh_per_mL_per_100L"],
+            eff_dkh_per_mL_per_100L=call.data.get("eff_dkh_per_mL_per_100L"),
+            param_id=call.data.get("param_id", "kh"),
             label_patterns=call.data.get("label_patterns"),
             notes=call.data.get("notes"),
         )
         _LOGGER.warning(
-            "Added supplement profile id=%s label=%r eff=%s patterns=%s notes=%r",
-            entry["id"], entry["label"],
-            entry["eff_dkh_per_mL_per_100L"],
+            "Added supplement profile id=%s label=%r param_id=%s eff=%s "
+            "patterns=%s notes=%r",
+            entry["id"], entry["label"], entry.get("param_id", "kh"),
+            entry.get("eff_dkh_per_mL_per_100L"),
             entry["label_patterns"], entry.get("notes"),
         )
 
@@ -441,24 +475,38 @@ async def _async_register_services(
     async def handle_list_supplement_profiles(call: ServiceCall) -> None:
         # Local import to avoid hoisting alk_advisor's HA-helper imports
         # into the top of __init__.py.
-        from .alk_advisor import all_profiles
-        merged = all_profiles(coordinator)
-        # Index user profiles by id so we can pull patterns/notes for the listing.
-        user_by_id = {p["id"]: p for p in coordinator.supplement_profiles}
-        lines = ["Supplement profiles (BUILTIN unless tagged USER):"]
-        for pid, prof in merged.items():
-            tag = "USER" if pid in user_by_id else "BUILTIN"
-            eff = prof["eff_dkh_per_mL_per_100L"]
-            eff_s = f"{eff} dKH/mL/100L" if eff is not None else "(sentinel)"
-            line = f"  [{tag}] {pid} — {prof['label']} — {eff_s}"
-            if pid in user_by_id:
-                u = user_by_id[pid]
-                pats = u.get("label_patterns") or []
-                if pats:
-                    line += f"  patterns={pats}"
-                if u.get("notes"):
-                    line += f"  notes={u['notes']!r}"
-            lines.append(line)
+        from .alk_advisor import BUILTIN_PROFILES
+        # Group BOTH builtin (always KH) + user profiles by param_id so
+        # the user can see the full registry at a glance — useful when
+        # debugging "why doesn't the alk advisor see my new supplement"
+        # (answer: param_id != "kh").
+        by_param: dict[str, list[tuple[str, str, dict]]] = {}
+        for pid, prof in BUILTIN_PROFILES.items():
+            by_param.setdefault("kh", []).append(("BUILTIN", pid, prof))
+        for u in coordinator.supplement_profiles:
+            param_id = u.get("param_id", "kh")
+            by_param.setdefault(param_id, []).append(("USER", u["id"], u))
+
+        lines = [
+            "Supplement profiles (BUILTIN unless tagged USER), grouped by param_id:",
+        ]
+        for param_id in sorted(by_param):
+            lines.append(f"\n  [{param_id}]")
+            for tag, pid, prof in by_param[param_id]:
+                eff = prof.get("eff_dkh_per_mL_per_100L")
+                eff_s = (
+                    f"{eff} dKH/mL/100L"
+                    if eff is not None and param_id == "kh"
+                    else "(n/a — non-KH supplement)"
+                )
+                line = f"    [{tag}] {pid} — {prof['label']} — {eff_s}"
+                if tag == "USER":
+                    pats = prof.get("label_patterns") or []
+                    if pats:
+                        line += f"  patterns={pats}"
+                    if prof.get("notes"):
+                        line += f"  notes={prof['notes']!r}"
+                lines.append(line)
         _LOGGER.warning("\n".join(lines))
 
     async def handle_log_water_change(call: ServiceCall) -> None:

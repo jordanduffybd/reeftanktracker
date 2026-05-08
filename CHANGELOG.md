@@ -2,6 +2,30 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.4.4 — supplement profiles get `param_id` (foundation for per-element advisors)
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+Foundation work for the per-element advisors (Ca, Mg, NO3, PO4) coming in 0.5.0. No user-visible feature change in this release on its own, but unblocks the per-element work cleanly.
+
+### What changed
+
+- **`add_supplement_profile` service** now accepts an optional `param_id` field (defaults to `"kh"` for back-compat). Use `"calcium"`, `"magnesium"`, `"nitrate"`, `"phosphate"`, etc. for non-alk supplements.
+- **`eff_dkh_per_mL_per_100L`** is now optional when `param_id` is non-KH (it has no meaning for ppm-based or remover supplements). For KH supplements it remains required — the alk advisor needs a real potency to compute dose changes.
+- **Coordinator** stores `param_id` on each profile and exposes a new `supplement_profiles_for(param_id)` helper that filters and treats missing `param_id` as `"kh"` (so profiles created before this release keep working).
+- **Alk advisor's dropdown** filters to KH-only profiles via `coordinator.supplement_profiles_for("kh")`. Non-KH supplements (e.g. the Quantum Aqua AR / LR / HR products registered as a workaround in 0.4.3) no longer appear in the alk Options dropdown — they'll surface in their own per-element advisor when 0.5.0 lands.
+- **Auto-detect label patterns** are also filtered to KH-only so a phosphate / nitrate supplement label can't accidentally match against the alk doser's `_supplement` state.
+- **`list_supplement_profiles`** service now groups output by `param_id` for clear at-a-glance debugging ("why doesn't the alk advisor see my supplement?" → "because its param_id is `phosphate`").
+
+### Migration
+
+- Profiles created before 0.4.4 (no `param_id` field on disk) are treated as `"kh"` everywhere — no manual migration needed.
+- The 3 Quantum Aqua products registered in 0.4.3 (AR Phosphate / LR Nitrate / HR Nitrate) currently default to `"kh"` since they were registered before this release. They should be re-registered with proper `param_id` (`"phosphate"` / `"nitrate"` / `"nitrate"`) after 0.4.4 installs — call `remove_supplement_profile` then `add_supplement_profile` with the correct `param_id`.
+
+### Tests
+
+123 passing (was 117). Adds 4 coordinator tests (`param_id` defaults / accepts non-KH / filters / legacy back-compat) and 2 advisor tests (`all_profiles` excludes non-KH / `all_label_patterns` excludes non-KH).
+
 ## 0.4.3 — Target ranges Options page + ICP debug-bundle parse trace + alk advisor robustness
 
 **Tested against:** HA Core `2026.4.4` (dev).

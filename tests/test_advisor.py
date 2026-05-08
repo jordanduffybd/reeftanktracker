@@ -687,6 +687,14 @@ class _StubCoord:
         self.supplement_profiles = list(profiles or [])
     def get_advisor_config(self) -> dict:
         return self._options
+    def supplement_profiles_for(self, param_id: str) -> list[dict]:
+        # Mirrors ReefDataCoordinator.supplement_profiles_for: filters
+        # by param_id, treating profiles missing the field as "kh" for
+        # back-compat with profiles created before 0.4.4.
+        return [
+            p for p in self.supplement_profiles
+            if p.get("param_id", "kh") == param_id
+        ]
 
 
 def test_resolve_spec_eff_auto_with_detected_profile():
@@ -739,6 +747,7 @@ def test_all_profiles_merges_builtins_and_user():
         "label": "Brightwell Alkalin8.3",
         "eff_dkh_per_mL_per_100L": 0.083,
         "label_patterns": ["alkalin8"],
+        # No param_id — legacy / kh-implicit profile (back-compat)
     }])
     merged = alk_advisor.all_profiles(coord)
     assert "auto" in merged
@@ -747,6 +756,71 @@ def test_all_profiles_merges_builtins_and_user():
     assert "custom" in merged
     assert "brightwell_alkalin8_3" in merged
     assert merged["brightwell_alkalin8_3"]["eff_dkh_per_mL_per_100L"] == 0.083
+
+
+def test_all_profiles_excludes_non_kh_supplements():
+    """Profiles with param_id != "kh" must NOT appear in the alk
+    advisor's dropdown — those target other parameters and would
+    confuse the user (and potentially the auto-detect, if patterns
+    matched a non-alk supplement label on the alk doser).
+
+    Regression for the 0.4.4 enhancement that added param_id."""
+    coord = _StubCoord({}, profiles=[
+        {
+            "id": "foundation_b_custom",
+            "label": "Foundation B Custom",
+            "eff_dkh_per_mL_per_100L": 0.1,
+            "param_id": "kh",
+            "label_patterns": [],
+        },
+        {
+            "id": "quantum_ar_phosphate",
+            "label": "Quantum AR Phosphate",
+            "eff_dkh_per_mL_per_100L": None,
+            "param_id": "phosphate",
+            "label_patterns": [],
+        },
+        {
+            "id": "quantum_hr_nitrate",
+            "label": "Quantum HR Nitrate",
+            "eff_dkh_per_mL_per_100L": None,
+            "param_id": "nitrate",
+            "label_patterns": [],
+        },
+    ])
+    merged = alk_advisor.all_profiles(coord)
+    # KH profile shows up
+    assert "foundation_b_custom" in merged
+    # Non-KH profiles are FILTERED OUT
+    assert "quantum_ar_phosphate" not in merged
+    assert "quantum_hr_nitrate" not in merged
+
+
+def test_all_label_patterns_excludes_non_kh_patterns():
+    """Auto-detect on the alk doser's _supplement state must not
+    match a phosphate / nitrate supplement's pattern even if the
+    user happened to register one with `label_patterns`."""
+    coord = _StubCoord({}, profiles=[
+        {
+            "id": "kh_with_pattern",
+            "label": "KH supplement with pattern",
+            "eff_dkh_per_mL_per_100L": 0.1,
+            "param_id": "kh",
+            "label_patterns": ["my_alk_label"],
+        },
+        {
+            "id": "po4_with_pattern",
+            "label": "PO4 supplement with pattern",
+            "eff_dkh_per_mL_per_100L": None,
+            "param_id": "phosphate",
+            "label_patterns": ["should_not_match"],
+        },
+    ])
+    patterns = alk_advisor.all_label_patterns(coord)
+    pattern_ids = {pid for pid, _ in patterns}
+    assert "kh_with_pattern" in pattern_ids
+    # Non-KH patterns are excluded
+    assert "po4_with_pattern" not in pattern_ids
 
 
 def test_all_label_patterns_appends_user_after_builtin():

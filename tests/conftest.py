@@ -43,7 +43,10 @@ def _install_ha_stubs() -> None:
         vol.In = lambda options: _passthrough
         vol.Coerce = lambda t: _passthrough
         vol.All = lambda *a, **kw: _passthrough
+        vol.Any = lambda *a, **kw: _passthrough
         vol.Range = lambda **kw: _passthrough
+        class _Invalid(Exception): pass
+        vol.Invalid = _Invalid
         sys.modules["voluptuous"] = vol
 
     ha = types.ModuleType("homeassistant")

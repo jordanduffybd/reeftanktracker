@@ -106,10 +106,19 @@ BUILTIN_LABEL_PATTERNS: list[tuple[str, list[str]]] = [
 
 
 def all_profiles(coordinator: ReefDataCoordinator) -> dict[str, dict[str, Any]]:
-    """Builtins ∪ user-added profiles. User entries are appended; the
-    `user_`/slug-prefix scheme prevents collisions with builtin keys."""
+    """Builtins ∪ user-added KH-targeting profiles.
+
+    Only returns profiles that target the alk parameter (param_id="kh"
+    or missing for back-compat with profiles created before the field
+    existed). Profiles for Ca / Mg / NO3 / PO4 / etc. are excluded so
+    they don't pollute the alk advisor's dropdown — those will surface
+    in the per-element advisors arriving in 0.5.0.
+
+    User entries are appended after builtins; the `user_`/slug-prefix
+    scheme prevents collisions with builtin keys.
+    """
     merged = dict(BUILTIN_PROFILES)
-    for p in coordinator.supplement_profiles:
+    for p in coordinator.supplement_profiles_for("kh"):
         merged[p["id"]] = {
             "label": p["label"],
             "eff_dkh_per_mL_per_100L": p["eff_dkh_per_mL_per_100L"],
@@ -120,9 +129,12 @@ def all_profiles(coordinator: ReefDataCoordinator) -> dict[str, dict[str, Any]]:
 def all_label_patterns(
     coordinator: ReefDataCoordinator,
 ) -> list[tuple[str, list[str]]]:
-    """Builtin patterns first (verified vendor labels win), then user."""
+    """Builtin patterns first (verified vendor labels win), then user
+    KH-targeting patterns. Non-KH supplement patterns are excluded so
+    auto-detect on the alk doser's `_supplement` state can't accidentally
+    match a non-alk supplement label."""
     patterns = list(BUILTIN_LABEL_PATTERNS)
-    for p in coordinator.supplement_profiles:
+    for p in coordinator.supplement_profiles_for("kh"):
         if p.get("label_patterns"):
             patterns.append((p["id"], list(p["label_patterns"])))
     return patterns

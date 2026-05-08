@@ -334,24 +334,45 @@ log_demand_change:
 add_supplement_profile:
   name: Add Supplement Profile
   description: >
-    Register a custom alkalinity supplement so it appears in the Alk
-    Advisor's Supplement profile dropdown and is matched by auto-detect.
-    Vendor-published efficiency is dKH per mL per 100 L (Red Sea
-    Foundation B = 0.1; check your supplement's label).
+    Register a supplement so it appears in the relevant advisor's
+    Supplement profile dropdown. KH (alkalinity) supplements need a
+    vendor-published efficiency in dKH/mL/100L (e.g. Red Sea Foundation
+    B = 0.1). Non-KH supplements (Ca, Mg, NO3, PO4 supplements +
+    removers) just need the label + param_id; per-element advisors
+    arriving in 0.5.0 will consume them.
   fields:
     label:
       name: Label
-      description: Display name shown in the Options dropdown.
+      description: Display name shown in the dropdown.
       required: true
       example: "Brightwell Alkalin8.3"
       selector:
         text:
-    eff_dkh_per_mL_per_100L:
-      name: Efficiency (dKH per mL per 100 L)
+    param_id:
+      name: Target parameter
       description: >
-        Vendor-published potency. e.g. 0.1 means "1 mL per 100 L raises
-        alkalinity by 0.1 dKH". For Foundation B that's 0.1.
-      required: true
+        Which parameter this supplement affects. Defaults to "kh"
+        (alkalinity) so existing alk supplements keep working
+        unchanged. Use "calcium", "magnesium", "nitrate", "phosphate"
+        for non-alk supplements.
+      example: "kh"
+      default: "kh"
+      selector:
+        select:
+          options:
+            - kh
+            - calcium
+            - magnesium
+            - nitrate
+            - phosphate
+            - other
+    eff_dkh_per_mL_per_100L:
+      name: Efficiency (dKH per mL per 100 L) — KH supplements only
+      description: >
+        Vendor-published potency for KH supplements. 0.1 = "1 mL per
+        100 L raises alkalinity by 0.1 dKH". Required when
+        param_id=kh; ignored otherwise (the per-element advisors
+        arriving in 0.5.0 will introduce parameter-specific potency).
       example: 0.083
       selector:
         number:
