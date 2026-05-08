@@ -94,9 +94,36 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # ppm — used in `Reason` strings.
         "value_unit": "ppm",
     },
-    # 0.5.2+ adds "magnesium", "nitrate", "phosphate" with the same
-    # sparse-cadence defaults but param-specific target bands and
-    # cooldown windows.
+    "magnesium": {
+        # Holmes-Farley: 1250–1350 ppm broadly. SPS-leaning prefer
+        # 1300–1350; LPS tolerant down to 1200. NSW ~1280. Default
+        # to the SPS-friendly band.
+        "target_min": 1300.0,
+        "target_max": 1350.0,
+        # Mg test kits read in coarser units (typically ±20-30 ppm
+        # noise). 20 ppm hysteresis catches real drifts without
+        # chasing kit jitter on the wider scale.
+        "hysteresis": 20.0,
+        "step_cap_pct": 10.0,
+        # Same sparse-cadence defaults as Calcium — Mg is also
+        # tested manually (~1-2x/month). Mg is more forgiving than
+        # Ca (50-100 ppm/day shifts barely register), so the same
+        # cooldown/correction periods are appropriate.
+        "window_days": 90,
+        "min_samples": 2,
+        "min_trend_days": 2,
+        "min_samples_after_event": 1,
+        "cooldown_days": 30.0,
+        "dismiss_cooldown_days": 14.0,
+        "correction_period_days": 30.0,
+        "empirical_drift_pct": 50.0,
+        "wc_settling_hours": 24.0,
+        # Foundation C: 1 mL per 100L raises Mg by 1 ppm.
+        "default_eff_per_mL_per_100L": 1.0,
+        "value_unit": "ppm",
+    },
+    # 0.5.3+ adds "nitrate", "phosphate" with multi-supplement
+    # coordination + remover semantics + Redfield-ratio safety guards.
 }
 
 
@@ -414,4 +441,93 @@ def compute_for_param(
     rec.spec_efficiency_source = spec_eff_source
     rec.detected_supplement_label = None  # no auto-detect for non-KH yet
     rec.detected_supplement_profile = None
+
+    # Cross-parameter safety guards (0.5.2) — applied AFTER the
+    # algorithm produces a recommendation. Currently only the
+    # snowstorm guard for Calcium up-recommendations.
+    rec = _apply_safety_guards(coordinator, param_id, rec)
+    return rec
+
+
+def _latest_snapshot_value(
+    coordinator: ReefDataCoordinator, param_id: str,
+) -> float | None:
+    """Most-recent snapshot value for `param_id`, or None if no
+    snapshots exist yet. Used by cross-parameter safety guards
+    (e.g. Ca's snowstorm check needs the latest alk + Mg readings).
+    """
+    snaps = coordinator.advisor_snapshots(param_id)
+    if not snaps:
+        return None
+    # Snapshots are appended chronologically; last is most recent
+    last = snaps[-1]
+    v = last.get("kh")
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+def _apply_safety_guards(
+    coordinator: ReefDataCoordinator,
+    param_id: str,
+    rec: Recommendation,
+) -> Recommendation:
+    """Cross-parameter safety guards. Applied AFTER the standard
+    compute path so the algorithm output reflects the user's
+    explicit safety settings.
+
+    Snowstorm guard (Ca): refuse to recommend RAISING Calcium dose
+    when alkalinity is high (>10 dKH) OR magnesium is low (<1200
+    ppm). Both conditions create supersaturation risk: high alk +
+    high Ca → CaCO3 precipitates as cloudy "snowstorm"; low Mg
+    fails to inhibit that precipitation. Holmes-Farley + BRStv
+    consensus is "fix Mg first, then alk + Ca settle."
+
+    The guard ONLY suppresses dose INCREASES — it never blocks a
+    decrease (lowering Ca dose can't trigger snowstorm). Holding
+    or decreasing recommendations pass through unchanged.
+
+    See `~/.claude/projects/.../memory/reference_reef_dosing_research.md`
+    for the full reasoning.
+    """
+    if param_id != "calcium":
+        return rec
+
+    # Only check if the algorithm is recommending an INCREASE
+    if (
+        rec.current_dose_mL is None
+        or rec.suggested_dose_mL is None
+        or rec.suggested_dose_mL <= rec.current_dose_mL
+    ):
+        return rec
+
+    # Cross-param snapshot reads — alk advisor and Mg advisor each
+    # store snapshots keyed by their own param_id.
+    latest_kh = _latest_snapshot_value(coordinator, "kh")
+    latest_mg = _latest_snapshot_value(coordinator, "magnesium")
+
+    triggered: list[str] = []
+    if latest_kh is not None and latest_kh > 10.0:
+        triggered.append(
+            f"alkalinity {latest_kh:.2f} dKH > 10 (precipitation risk)"
+        )
+    if latest_mg is not None and latest_mg < 1200.0:
+        triggered.append(
+            f"magnesium {latest_mg:.0f} ppm < 1200 (low-Mg fails to "
+            f"inhibit Ca/alk precipitation)"
+        )
+
+    if not triggered:
+        return rec
+
+    # Override the recommendation: hold current dose, mark guard active
+    rec.suggested_dose_mL = rec.current_dose_mL
+    rec.state = rec.current_dose_mL
+    rec.change_mL = 0.0
+    rec.change_pct = 0.0
+    rec.confidence = "low"
+    rec.reason = (
+        f"⚠ Snowstorm guard suppressed Ca up-recommendation: "
+        f"{'; '.join(triggered)}. Address alk/Mg first — Holmes-Farley "
+        f"consensus is fix Mg, then alk + Ca settle. Original advisor "
+        f"reasoning: {rec.reason}"
+    )
     return rec
