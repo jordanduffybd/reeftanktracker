@@ -63,15 +63,30 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "hysteresis": 5.0,
         # Same step cap as alk — 10% is conservative across all elements.
         "step_cap_pct": 10.0,
-        # 5 days — Holmes-Farley says 3–5 days minimum to observe a Ca
-        # dose change result.
-        "cooldown_days": 5.0,
-        "dismiss_cooldown_days": 2.0,
-        "window_days": 7,
-        "min_samples": 5,
-        "min_trend_days": 3,
-        "min_samples_after_event": 3,
-        "correction_period_days": 7.0,
+        # Defaults tuned for VERY SPARSE manual testing — typical
+        # cadence is 1-2 Ca readings per month, max 4. Auto-tester
+        # users (future Mastertronic Essential) can shrink the
+        # window via Options for faster response cycles.
+        #
+        # 90-day rolling window: accumulates 3-6 readings at typical
+        # cadence. min_samples=2 means the advisor activates as soon
+        # as you have ONE comparison reading; min_trend_days=2 then
+        # requires 2 consecutive out-of-band readings before
+        # suggesting a change. So a single noisy reading can't trigger
+        # action — we always need at least one confirmation.
+        "window_days": 90,
+        "min_samples": 2,
+        "min_trend_days": 2,
+        # 1 post-event reading is enough to exit learning mode at
+        # this cadence (waiting 3 months would be absurd).
+        "min_samples_after_event": 1,
+        # 30-day cooldown matches typical monthly testing cadence —
+        # one full testing cycle between recommendations.
+        "cooldown_days": 30.0,
+        "dismiss_cooldown_days": 14.0,
+        # Spread corrections over a month → gentle daily dose changes
+        # appropriate for the slow-feedback manual-test loop.
+        "correction_period_days": 30.0,
         "empirical_drift_pct": 50.0,
         "wc_settling_hours": 24.0,
         # Foundation A: 1 mL per 100L raises Ca by 2 ppm.
@@ -79,7 +94,9 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # ppm — used in `Reason` strings.
         "value_unit": "ppm",
     },
-    # 0.5.1 will add "magnesium" with its own (slower) cooldown.
+    # 0.5.2+ adds "magnesium", "nitrate", "phosphate" with the same
+    # sparse-cadence defaults but param-specific target bands and
+    # cooldown windows.
 }
 
 

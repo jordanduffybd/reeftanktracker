@@ -14,7 +14,7 @@ with wall-clock time, not the underlying sample time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import logging
 import re
@@ -410,6 +410,90 @@ class ReefDataCoordinator:
                 "Snapshot-on-reading failed for parameter=%r: %s",
                 parameter, exc,
             )
+
+    async def async_backfill_advisor_snapshots(
+        self, param_id: str, *, days: int = 90,
+    ) -> int:
+        """Synthesize advisor snapshots from existing Reading records
+        for `param_id`, going back `days` days. Idempotent — skips
+        readings whose sample timestamp already has a snapshot.
+
+        Solves the cold-start problem: when the user enables a per-
+        element advisor for a parameter they've already been tracking
+        manually, the snapshot blob is empty (snapshots only fire for
+        readings recorded AFTER the advisor was added in 0.5.0+). This
+        method backfills from the historical Reading records so the
+        advisor can produce a recommendation immediately.
+
+        For each unique sample DATE in the readings (one snapshot per
+        day max — multiple readings same day get coalesced via mean),
+        appends a snapshot. `dose_mL` is set to the current sum across
+        configured heads — the algorithm tolerates `dose_mL=None` for
+        historical days (slope/median calculations skip None entries),
+        so this approximation is fine.
+
+        Returns the count of snapshots added.
+        """
+        from . import param_advisor
+        if param_id not in param_advisor.PARAM_DEFAULTS:
+            return 0
+
+        readings = self.readings_for(param_id)
+        if not readings:
+            return 0
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        recent = [
+            r for r in readings if (r.get("sample_taken_at") or "") >= cutoff
+        ]
+        # Group by DATE (YYYY-MM-DD) — one snapshot per day max
+        by_date: dict[str, list[dict[str, Any]]] = {}
+        for r in recent:
+            sat = r.get("sample_taken_at") or ""
+            date_key = sat[:10]
+            if not date_key:
+                continue
+            by_date.setdefault(date_key, []).append(r)
+
+        # Find existing snapshot dates so we don't duplicate
+        existing_dates = {
+            (s.get("at") or "")[:10]
+            for s in self.advisor_snapshots(param_id)
+        }
+
+        added = 0
+        for date_key in sorted(by_date):
+            if date_key in existing_dates:
+                continue
+            day_readings = by_date[date_key]
+            # Average value across same-day readings
+            values = [
+                float(r["value"]) for r in day_readings
+                if r.get("value") is not None
+            ]
+            if not values:
+                continue
+            avg_value = sum(values) / len(values)
+            # Use the first reading's sample_taken_at as the snapshot
+            # timestamp (close to the reading time, not synthesised
+            # midnight).
+            first_at = day_readings[0].get("sample_taken_at")
+            await self.async_record_advisor_snapshot(
+                param_id,
+                at=first_at or f"{date_key}T08:00:00+00:00",
+                kh=round(avg_value, 4),
+                dose_mL=None,  # historical — current dose isn't representative
+            )
+            added += 1
+        if added:
+            _LOGGER.info(
+                "Backfilled %d snapshot(s) for advisor param=%s "
+                "from existing Reading history (looked back %d days)",
+                added, param_id, days,
+            )
+        return added
 
     def _resolve_advisor_entity_id(self) -> str | None:
         """Find the actual entity_id for the alk advisor sensor in the
@@ -831,6 +915,7 @@ class ReefDataCoordinator:
 
     async def async_add_supplement_profile(
         self, *, label: str, eff_dkh_per_mL_per_100L: float | None = None,
+        eff_per_mL_per_100L: float | None = None,
         param_id: str | list[str] = "kh",
         label_patterns: list[str] | None = None, notes: str | None = None,
     ) -> dict[str, Any]:
@@ -852,13 +937,23 @@ class ReefDataCoordinator:
         entry: dict[str, Any] = {
             "id": _unique_slug(label, taken),
             "label": label,
-            # Stored as float when present, None for non-KH supplements
-            # whose potency the alk advisor never reads. Per-element
-            # advisors (0.5.0+) will introduce parameter-aware potency
-            # fields on profiles; for now this stays KH-shaped.
+            # KH-specific potency (back-compat): the alk advisor reads
+            # this directly via `eff_dkh_per_mL_per_100L`.
             "eff_dkh_per_mL_per_100L": (
                 float(eff_dkh_per_mL_per_100L)
                 if eff_dkh_per_mL_per_100L is not None else None
+            ),
+            # Generic per-element potency (added 0.5.1). Units depend
+            # on `param_id`:
+            # - calcium: ppm Ca per mL per 100L (Foundation A = 2.0)
+            # - magnesium: ppm Mg per mL per 100L (Foundation C = 1.0)
+            # - nitrate/phosphate (removers): negative values
+            # Per-element advisors (param_advisor.compute_for_param)
+            # read this value first, falling back to the KH field for
+            # back-compat with profiles registered before 0.5.1.
+            "eff_per_mL_per_100L": (
+                float(eff_per_mL_per_100L)
+                if eff_per_mL_per_100L is not None else None
             ),
             "param_id": pids,
             "label_patterns": [p.lower() for p in (label_patterns or [])],

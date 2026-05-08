@@ -169,6 +169,18 @@ ADD_SUPPLEMENT_PROFILE_SCHEMA = vol.All(
             None,
             vol.All(vol.Coerce(float), vol.Range(min=0.001, max=5.0)),
         ),
+        # Generic per-element potency. Units depend on `param_id`:
+        # - calcium: ppm Ca per mL per 100L (Foundation A = 2.0)
+        # - magnesium: ppm Mg per mL per 100L (Foundation C = 1.0)
+        # - nitrate / phosphate: ppm reduction per mL per 100L (use
+        #   negative values for removers — e.g. lanthanum-based
+        #   phosphate removers)
+        # The schema range is wide because different parameters span
+        # different magnitudes (Ca jumps by ppm, alk by 0.1 dKH).
+        vol.Optional("eff_per_mL_per_100L"): vol.Any(
+            None,
+            vol.All(vol.Coerce(float), vol.Range(min=-100.0, max=100.0)),
+        ),
         # Which parameter(s) this supplement targets. Accepts either
         # a single string ("kh") or a list (["nitrate", "phosphate"]
         # for NO3:PO4-X-style multi-target supplements). Default "kh"
@@ -483,15 +495,17 @@ async def _async_register_services(
         entry = await coordinator.async_add_supplement_profile(
             label=call.data["label"],
             eff_dkh_per_mL_per_100L=call.data.get("eff_dkh_per_mL_per_100L"),
+            eff_per_mL_per_100L=call.data.get("eff_per_mL_per_100L"),
             param_id=call.data.get("param_id", "kh"),
             label_patterns=call.data.get("label_patterns"),
             notes=call.data.get("notes"),
         )
         _LOGGER.warning(
-            "Added supplement profile id=%s label=%r param_id=%s eff=%s "
-            "patterns=%s notes=%r",
+            "Added supplement profile id=%s label=%r param_id=%s "
+            "eff_dkh=%s eff=%s patterns=%s notes=%r",
             entry["id"], entry["label"], entry.get("param_id", "kh"),
             entry.get("eff_dkh_per_mL_per_100L"),
+            entry.get("eff_per_mL_per_100L"),
             entry["label_patterns"], entry.get("notes"),
         )
 
