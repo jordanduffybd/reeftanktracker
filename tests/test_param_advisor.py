@@ -178,30 +178,32 @@ def test_opt_key_format():
 # ---------------------------------------------------------------------------
 def test_calcium_defaults_present_and_research_aligned():
     """Sanity-check the calcium defaults match the research consensus
-    (see memory: reference_reef_dosing_research.md) AND the manual-
-    once-a-week testing cadence assumption (0.5.1+)."""
+    (see memory: reference_reef_dosing_research.md) AND the SPARSE
+    manual-cadence assumption (1-2 readings per month, max 4)."""
     ca = param_advisor.PARAM_DEFAULTS["calcium"]
     # Target 420-440 (SPS-friendly per Holmes-Farley)
     assert ca["target_min"] == 420.0
     assert ca["target_max"] == 440.0
     # ±10% step cap, conservative across reef types
     assert ca["step_cap_pct"] == 10.0
-    # 21 days — manual once-a-week testing means 3 weekly cycles per
-    # cooldown. Holmes-Farley's 5-day rule applies for daily-tested
-    # cadence (auto-tester); we tune for the slower manual flow.
-    assert ca["cooldown_days"] == 21.0
     # 5 ppm hysteresis (within test-kit noise)
     assert ca["hysteresis"] == 5.0
     # Foundation A: 2 ppm Ca per mL per 100L
     assert ca["default_eff_per_mL_per_100L"] == 2.0
     assert ca["value_unit"] == "ppm"
-    # Manual-cadence window: 42 days = ~6 weeks for 4 weekly readings
-    # to accumulate (with 1-2 missed weeks tolerated).
-    assert ca["window_days"] == 42
-    assert ca["min_samples"] == 4
-    # Correction spread over 3 weeks → gentler dose changes appropriate
-    # for the manual-test feedback loop.
-    assert ca["correction_period_days"] == 21.0
+    # Sparse-cadence defaults — typical user tests Ca 1-2x/month.
+    # 90-day window accumulates 3-6 readings; min_samples=2 activates
+    # the advisor as soon as you have one comparison reading;
+    # min_trend_days=2 means a single noisy reading can't trigger
+    # action (always need confirmation).
+    assert ca["window_days"] == 90
+    assert ca["min_samples"] == 2
+    assert ca["min_trend_days"] == 2
+    assert ca["min_samples_after_event"] == 1
+    # 30-day cooldown matches typical testing cadence
+    assert ca["cooldown_days"] == 30.0
+    # Spread corrections over a month → gentle dose changes
+    assert ca["correction_period_days"] == 30.0
 
 
 def test_param_label_and_unit_propagate_to_advisor_config():

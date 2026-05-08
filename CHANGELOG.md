@@ -6,18 +6,20 @@
 
 **Tested against:** HA Core `2026.4.4` (dev). Focused UX pass on the 0.5.0 Calcium advisor based on real-prod feedback. **Mg / NO3 / PO4 advisors deferred to 0.5.2** — Ca needed to be solid first.
 
-### Manual-cadence defaults
+### Sparse-cadence defaults
 
-The 0.5.0 defaults assumed daily testing (window_days=7, min_samples=5, cooldown=5d, correction_period=7d). For users testing **once a week manually** (until Mastertronic Essential or similar arrives), this never accumulates enough samples. New defaults for Calcium:
+The 0.5.0 defaults assumed daily testing (window_days=7, min_samples=5, cooldown=5d, correction_period=7d). For users testing **1–2 times per month, max 4** (the realistic manual cadence without an auto-tester), this never accumulates enough samples to compute. Reset for sparse manual testing:
 
-| Setting | 0.5.0 (daily) | 0.5.1 (weekly) | Rationale |
+| Setting | 0.5.0 (daily) | 0.5.1 (sparse manual) | Rationale |
 |---|---|---|---|
-| `window_days` | 7 | **42** | ~6 weeks for 4 weekly readings, with 1-2 missed weeks tolerated |
-| `min_samples` | 5 | **4** | 4 weekly readings = 4 weeks of signal |
-| `cooldown_days` | 5 | **21** | 3 weekly testing cycles per cooldown |
-| `correction_period_days` | 7 | **21** | Spread corrections over 3 weeks → gentler dose changes |
+| `window_days` | 7 | **90** | 90 days accumulates 3–6 readings at 1–2/month cadence |
+| `min_samples` | 5 | **2** | Activates as soon as you have ONE comparison reading |
+| `min_trend_days` | 3 | **2** | 2 consecutive out-of-band readings before suggesting (single noisy reading can't trigger action) |
+| `min_samples_after_event` | 3 | **1** | Exit demand-change learning mode after 1 post-event reading |
+| `cooldown_days` | 5 | **30** | One monthly testing cycle per cooldown |
+| `correction_period_days` | 7 | **30** | Spread corrections over a month → gentler dose changes |
 
-If you have an auto-tester, you can shrink window/min_samples back via the Options form for faster response cycles. The defaults adapt to the manual-cadence floor.
+Auto-tester users (future Mastertronic Essential) bump min_samples and shrink window_days via the Options form for faster response cycles.
 
 ### Cold-start backfill from existing readings
 
