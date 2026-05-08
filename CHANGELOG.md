@@ -2,6 +2,56 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.0 — Calcium advisor + generalized per-element framework
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+First per-element advisor lands. Calcium uses the same algorithm engine as the alk advisor (7-day rolling median, ±10% step cap, demand-change-aware, hysteresis, cooldown, calibration warning) — parameterized so adding Magnesium / Nitrate / Phosphate is a small lift in subsequent releases.
+
+**Phase plan (carrying forward from the 0.4.4 plan):**
+- 0.5.0 (this release): Calcium advisor + framework
+- 0.5.1: Magnesium advisor (trivial copy, different defaults)
+- 0.5.2: Nitrate + Phosphate advisors with multi-supplement coordination + remover semantics
+
+### What's new
+
+- **`sensor.reef_tank_calcium_advisor_recommendation`** — same surface as the alk advisor sensor: state = suggested daily dose in mL, attributes carry the show-your-work breakdown (Calcium median, target band, current/suggested dose, change mL/%, confidence, reason, observed slope, samples used, etc.). State is `unavailable` until you opt in via Configure → "Calcium dosing advisor".
+- **New "Calcium dosing advisor" Options page** under Configure. Same shape as the alk page: enabled toggle, dose head sensor(s), source sensor (for future Mastertronic Essential auto-source — leave blank for manual-only), supplement profile dropdown filtered to `param_id="calcium"` (you'll see Red Sea Foundation A here), spec efficiency, target band (default 420–440 ppm), and the algorithm tunables (window 7 days, cooldown 5 days, step cap 10%, hysteresis 5 ppm, etc.).
+- **Snapshot-on-record-reading.** Without an auto-source sensor for Calcium (until Mastertronic), the advisor needs snapshots to come from manual entries. Each `reeftanktracker.record_reading` call for `parameter="calcium"` now also captures an advisor snapshot (with the current dose summed across the configured Ca heads). Same path will fire for Mg / NO3 / PO4 in subsequent releases — extends the pattern via `param_advisor.PARAM_DEFAULTS`.
+- **New `param_advisor.py` module** holds the parameter-aware compute path (`compute_for_param(hass, coord, param_id)`). Wraps the existing parameter-agnostic `advisor.compute_recommendation` algorithm engine in a config + state-resolution layer that handles non-KH parameters. The alk advisor stays on its own `alk_advisor.py` code path for now (stable in prod; collapse later if/when the per-element work settles).
+- **`AdvisorConfig` gains `param_label` + `value_unit`** so the algorithm's reason text adapts: "Calcium median 415.00 ppm is within target band..." instead of the hardcoded "KH median X dKH". Back-compat: defaults stay "KH" / "dKH" so the existing alk advisor text is unchanged.
+- **Doser-unreachable message** generalized: "Doser daily-dose sensor is unreachable or zero (check ReefBeat / doser connectivity)..." (was "Alk doser..."). Applies to all advisors.
+
+### Per-element defaults (Calcium, from research)
+
+- Target band: 420–440 ppm (SPS-friendly; widen via Options for LPS-dominant)
+- Step cap: ±10%
+- Cooldown: 5 days
+- Window: 7 days
+- Hysteresis: 5 ppm (within typical test-kit noise)
+- Foundation A potency: 2 ppm Ca per mL per 100L (used as default when the Foundation A profile is selected without a stored potency value)
+
+### Future safety guards (deferred to 0.5.x)
+
+The Ca/Mg/NO3/PO4 research (memorized at `~/.claude/projects/.../memory/reference_reef_dosing_research.md`) flagged several cross-parameter safety guards that need encoding:
+- Refuse Ca-up recommendation when alk > 10 dKH OR Mg < 1200 (snowstorm risk)
+- Cross-warn when Ca + alk advisors both want > 5% change in same week
+- Refuse NO3/PO4 dose increase when below floor (0.5 ppm / 0.03 ppm)
+- Redfield ratio warning (NO3:PO4 < 50:1 or > 200:1)
+- HR → LR Nitrate Remover switch suggestion when NO3 ≤ 15 sustained 7+ days
+
+These are scoped to 0.5.1 (single-supplement Mg + cross-Ca-alk guards) and 0.5.2 (multi-supplement NO3/PO4 with Redfield + floors).
+
+### Tests
+
+126 passing (unchanged). New per-element code paths tested manually end-to-end in dev (Ca advisor with 7 days of mock readings → produces real recommendation with parameter-aware reason text). Unit tests for `param_advisor` to follow in a fast follow.
+
+### Post-install actions
+
+1. Restart the integration so the new entities register.
+2. Configure → "Calcium dosing advisor" → set enabled, pick Foundation A from supplement profile dropdown, set heads (which RSDose head doses Calcium), accept defaults for the rest.
+3. Manual Calcium readings via the Test Session view will now also capture advisor snapshots — after ~5 readings you'll see the advisor produce a recommendation.
+
 ## 0.4.4 — supplement profiles get `param_id` (foundation for per-element advisors)
 
 **Tested against:** HA Core `2026.4.4` (dev).

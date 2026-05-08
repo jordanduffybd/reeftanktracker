@@ -251,6 +251,10 @@ def _resolve_advisor_config(entry: ConfigEntry) -> dict[str, Any]:
 
     Pass through:
     - Everything in ADVISOR_DEFAULTS (the alk advisor's tunables)
+    - Any `advisor_<param_id>_*` per-element advisor key (Ca, Mg, NO3,
+      PO4 — see param_advisor.PARAM_DEFAULTS). Picking up these by
+      prefix means new per-element advisors don't need plumbing
+      changes here.
     - Any `target_<param_id>_min` / `target_<param_id>_max` override
       from the Target Ranges Options page — these are read by
       `coordinator.get_target_range` to override the static defaults
@@ -264,6 +268,12 @@ def _resolve_advisor_config(entry: ConfigEntry) -> dict[str, Any]:
         if key in entry.options:
             out[key] = entry.options[key]
     for key, value in entry.options.items():
+        # Per-element advisor keys (advisor_calcium_enabled, etc.).
+        # Skip anything already pulled in by ADVISOR_DEFAULTS to avoid
+        # double-write.
+        if key.startswith("advisor_") and key not in out:
+            out[key] = value
+        # Target-range overrides
         if key.startswith("target_") and (
             key.endswith("_min") or key.endswith("_max")
         ):

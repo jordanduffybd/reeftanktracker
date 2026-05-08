@@ -90,7 +90,15 @@ async def async_setup_entry(
     entities.extend([
         AlkAdvisorSensor(coordinator),
         DosingPlanSensor(coordinator),
+        # Per-element advisors. One sensor per param_id in PARAM_DEFAULTS
+        # — the sensor is registered always; availability mirrors the
+        # per-param `enabled` toggle so it shows as unavailable until
+        # the user opts in via Configure → "<Param> dosing advisor".
+        # 0.5.0 ships Calcium; Mg / NO3 / PO4 follow.
     ])
+    from . import param_advisor
+    for param_id in param_advisor.PARAM_DEFAULTS:
+        entities.append(ParameterAdvisorSensor(coordinator, param_id))
 
     async_add_entities(entities)
 
@@ -426,6 +434,138 @@ class AlkAdvisorSensor(SensorEntity):
             cfg.get(alk_advisor.OPT_ALK_HEADS) or []
         )
         attrs["kh_source_entity"] = cfg.get(alk_advisor.OPT_KH_SOURCE) or ""
+        return attrs
+
+
+# ---------------------------------------------------------------------------
+# Per-parameter advisor sensor (Calcium for 0.5.0; Mg / NO3 / PO4 follow)
+# ---------------------------------------------------------------------------
+class ParameterAdvisorSensor(SensorEntity):
+    """Generic per-element advisor sensor.
+
+    Same surface as `AlkAdvisorSensor` but parameter-aware. Reads from
+    `param_advisor.compute_for_param(hass, coordinator, param_id)`. One
+    instance per enabled parameter (one for calcium today; mg/no3/po4
+    in subsequent releases).
+
+    The alk advisor stays on its own dedicated class for now (stable in
+    prod, no need to refactor). A future cleanup can collapse the
+    duplication once the per-element work is settled.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_info = _device_info()
+    _attr_icon = "mdi:test-tube"
+
+    def __init__(
+        self, coordinator: ReefDataCoordinator, param_id: str,
+    ) -> None:
+        from . import param_advisor
+        self._coordinator = coordinator
+        self._param_id = param_id
+        self._param_advisor = param_advisor
+        self._last: Recommendation | None = None
+        defaults = param_advisor.PARAM_DEFAULTS.get(param_id, {})
+        # ppm for Ca/Mg/NO3/PO4 — comes from PARAM_DEFAULTS; the algorithm
+        # itself is unit-agnostic.
+        self._attr_native_unit_of_measurement = defaults.get(
+            "value_unit", "mL",
+        )
+        # Use mL for the dose unit since the suggested daily dose IS in
+        # mL. The unit_of_measurement above describes the parameter's
+        # native unit; the sensor's native_value is the dose in mL.
+        self._attr_native_unit_of_measurement = "mL"
+        # Param-specific entity_id + friendly name. Calcium →
+        # `sensor.reef_tank_calcium_advisor_recommendation`.
+        title = param_id.capitalize()
+        self._attr_unique_id = f"reef_{param_id}_advisor_recommendation"
+        self._attr_name = f"{title} Advisor Recommendation"
+
+    async def async_added_to_hass(self) -> None:
+        # Recompute on advisor-update dispatcher (snapshot recorded,
+        # ack, dismiss, demand-change, water-change, profile change for
+        # this param).
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_ADVISOR_UPDATED, self._handle_update
+            )
+        )
+        # Also subscribe to state changes on the configured doser heads
+        # so the advisor auto-recovers when ReefBeat returns from a
+        # transient outage (see the same pattern in AlkAdvisorSensor —
+        # this is the fix that landed in 0.4.3).
+        from homeassistant.helpers.event import async_track_state_change_event
+        from . import param_advisor
+        cfg = self._coordinator.get_advisor_config()
+        heads_key = param_advisor.opt_key(self._param_id, "heads")
+        source_key = param_advisor.opt_key(self._param_id, "source")
+        upstream: list[str] = []
+        upstream.extend(cfg.get(heads_key) or [])
+        src = cfg.get(source_key)
+        if src:
+            upstream.append(src)
+        if upstream:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, upstream, self._handle_upstream_change,
+                )
+            )
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_update(self, dispatched_param_id: str | None = None) -> None:
+        # Skip recompute if the dispatcher fired for a different
+        # parameter — keeps work down on multi-advisor installs.
+        if dispatched_param_id is not None and dispatched_param_id != self._param_id:
+            return
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_upstream_change(self, _event) -> None:
+        self.async_write_ha_state()
+
+    def _compute(self) -> Recommendation | None:
+        rec = self._param_advisor.compute_for_param(
+            self.hass, self._coordinator, self._param_id,
+        )
+        self._last = rec
+        return rec
+
+    @property
+    def native_value(self) -> float | None:
+        rec = self._compute()
+        return rec.state if rec is not None else None
+
+    @property
+    def available(self) -> bool:
+        cfg = self._coordinator.get_advisor_config()
+        enabled_key = self._param_advisor.opt_key(self._param_id, "enabled")
+        return bool(cfg.get(enabled_key))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        rec = self._last or self._compute()
+        cfg = self._coordinator.get_advisor_config()
+        opt_key = self._param_advisor.opt_key
+        if rec is None:
+            return {
+                "advisor_enabled": False,
+                "param_id": self._param_id,
+                "reason": (
+                    f"{self._param_id.capitalize()} advisor disabled in "
+                    "Options."
+                ),
+            }
+        attrs = rec.as_attributes()
+        attrs["advisor_enabled"] = True
+        attrs["param_id"] = self._param_id
+        attrs["dose_head_entity_ids"] = list(
+            cfg.get(opt_key(self._param_id, "heads")) or []
+        )
+        attrs["source_entity"] = cfg.get(
+            opt_key(self._param_id, "source"),
+        ) or ""
         return attrs
 
 

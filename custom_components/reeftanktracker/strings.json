@@ -18,7 +18,8 @@
         "menu_options": {
           "sources": "Auto-source sensors",
           "targets": "Target ranges",
-          "advisor": "Alk dosing advisor"
+          "advisor": "Alk dosing advisor",
+          "advisor_calcium": "Calcium dosing advisor"
         }
       },
       "sources": {
@@ -32,6 +33,10 @@
       "advisor": {
         "title": "Alk dosing advisor",
         "description": "Configure the alkalinity dosing recommendation engine. Leave 'Enable advisor' off until your KH source is calibrated. The advisor reads daily snapshots of KH + the sum of programmed dose across the selected alk heads, then suggests a daily-dose change weekly. v1 is recommendation-only — never writes to your doser."
+      },
+      "advisor_calcium": {
+        "title": "Calcium dosing advisor",
+        "description": "Configure the Calcium dosing recommendation engine. Same algorithm as the alk advisor — 7-day rolling median, ±10% step cap, 5-day cooldown, demand-change-aware. Snapshots come from your manual Calcium readings (no auto-source until Mastertronic Essential). Pick a Calcium-targeting supplement profile from the dropdown (e.g. Red Sea Foundation A) or use 'Custom' with a manual potency value. Default Foundation A potency: 2 ppm Ca per mL per 100L. Recommendation-only — never writes to your doser. SAFETY: refuses to recommend raising Ca when alkalinity is above 10 dKH or magnesium is below 1200 ppm (snowstorm risk)."
       }
     }
   },

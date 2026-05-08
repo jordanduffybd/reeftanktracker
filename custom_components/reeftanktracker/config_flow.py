@@ -88,7 +88,14 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
         """
         return self.async_show_menu(
             step_id="init",
-            menu_options=["sources", "targets", "advisor"],
+            menu_options=[
+                "sources",
+                "targets",
+                "advisor",
+                "advisor_calcium",
+                # 0.5.1+ will add: "advisor_magnesium", "advisor_nitrate",
+                # "advisor_phosphate" — same pattern, different param_id.
+            ],
         )
 
     async def async_step_sources(
@@ -318,5 +325,160 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="advisor",
+            data_schema=schema,
+        )
+
+    async def async_step_advisor_calcium(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Calcium dosing advisor configuration.
+
+        Same shape as the alk advisor page but parameter-aware. The
+        underlying compute is `param_advisor.compute_for_param(param_id="calcium")`.
+        Per-element supplements are filtered to those registered with
+        `param_id="calcium"` (see `coordinator.supplement_profiles_for`).
+        """
+        return await self._render_param_advisor_step(
+            user_input, param_id="calcium",
+        )
+
+    async def _render_param_advisor_step(
+        self, user_input: dict[str, Any] | None, *, param_id: str,
+    ) -> FlowResult:
+        """Shared renderer for per-element advisor pages. Each per-param
+        page is a thin wrapper over this helper — the page-specific
+        details come from `param_advisor.PARAM_DEFAULTS[param_id]`."""
+        from . import param_advisor
+
+        if user_input is not None:
+            merged = dict(self._entry.options)
+            for k, v in user_input.items():
+                if v in (None, "", []):
+                    merged.pop(k, None)
+                else:
+                    merged[k] = v
+            return self.async_create_entry(title="", data=merged)
+
+        opts = self._entry.options
+        defaults = param_advisor.PARAM_DEFAULTS.get(param_id, {})
+
+        # Build the supplement profile dropdown from coordinator's
+        # filtered profiles (only those tagged with this param_id).
+        coordinator = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id)
+        profiles = (
+            coordinator.supplement_profiles_for(param_id)
+            if coordinator is not None else []
+        )
+        # Always offer "custom" so the user can fall back to a manual
+        # spec efficiency without registering a profile.
+        profile_options = [
+            {"value": "custom", "label": "Custom (use the manual efficiency value below)"},
+        ]
+        for p in profiles:
+            profile_options.append({"value": p["id"], "label": p["label"]})
+
+        def _opt_key(suffix: str) -> str:
+            return param_advisor.opt_key(param_id, suffix)
+
+        def _num(*, mn: float, mx: float, step: float) -> Any:
+            return NumberSelector(NumberSelectorConfig(
+                mode="box", min=mn, max=mx, step=step,
+            ))
+
+        # Reasonable widget bounds per parameter — these are SCHEMA
+        # bounds (form validation), not algorithm constraints. Set wide
+        # so any plausible reef value is acceptable; the actual safety
+        # guards live in the algorithm.
+        SCHEMA_BOUNDS: dict[str, dict[str, tuple[float, float, float]]] = {
+            "calcium": {
+                "target": (300.0, 600.0, 1.0),
+                "hysteresis": (0.0, 50.0, 0.5),
+                "spec_eff": (0.1, 50.0, 0.1),  # ppm/mL/100L; FA = 2.0
+            },
+        }
+        bounds = SCHEMA_BOUNDS.get(param_id, {
+            "target": (0.0, 1000.0, 0.1),
+            "hysteresis": (0.0, 100.0, 0.1),
+            "spec_eff": (0.001, 100.0, 0.001),
+        })
+
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(_opt_key("enabled")): BooleanSelector(),
+            # Doser heads: same EntitySelector filter as alk
+            # — domain=sensor, device_class=volume (Reefbeat exposes
+            # daily_dose entities with mL units + volume class).
+            vol.Optional(_opt_key("heads")): EntitySelector(
+                EntitySelectorConfig(
+                    domain=["sensor"],
+                    device_class=["volume"],
+                    multiple=True,
+                ),
+            ),
+            # Source sensor — for params with auto-source (KH today;
+            # future Mastertronic Essential for Ca/Mg/NO3/PO4). Until
+            # then, leave empty and the advisor reads snapshots from
+            # manual `record_reading` entries instead.
+            vol.Optional(_opt_key("source")): EntitySelector(
+                EntitySelectorConfig(domain=["sensor", "input_number"]),
+            ),
+            vol.Optional(_opt_key("supplement_profile")): SelectSelector(
+                SelectSelectorConfig(
+                    options=profile_options,
+                    mode="dropdown",
+                ),
+            ),
+            vol.Optional(_opt_key("spec_efficiency")): _num(
+                mn=bounds["spec_eff"][0], mx=bounds["spec_eff"][1],
+                step=bounds["spec_eff"][2],
+            ),
+            vol.Optional(_opt_key("target_min")): _num(
+                mn=bounds["target"][0], mx=bounds["target"][1],
+                step=bounds["target"][2],
+            ),
+            vol.Optional(_opt_key("target_max")): _num(
+                mn=bounds["target"][0], mx=bounds["target"][1],
+                step=bounds["target"][2],
+            ),
+            vol.Optional(_opt_key("window_days")): _num(mn=2, mx=30, step=1),
+            vol.Optional(_opt_key("min_samples")): _num(mn=2, mx=30, step=1),
+            vol.Optional(_opt_key("min_trend_days")): _num(mn=1, mx=14, step=1),
+            vol.Optional(_opt_key("cooldown_days")): _num(mn=0, mx=30, step=0.5),
+            vol.Optional(_opt_key("dismiss_cooldown_days")): _num(
+                mn=0, mx=30, step=0.5,
+            ),
+            vol.Optional(_opt_key("step_cap_pct")): _num(mn=1, mx=100, step=1),
+            vol.Optional(_opt_key("hysteresis")): _num(
+                mn=bounds["hysteresis"][0], mx=bounds["hysteresis"][1],
+                step=bounds["hysteresis"][2],
+            ),
+            vol.Optional(_opt_key("min_samples_after_event")): _num(
+                mn=1, mx=14, step=1,
+            ),
+            vol.Optional(_opt_key("correction_period_days")): _num(
+                mn=1, mx=30, step=0.5,
+            ),
+        }
+
+        # Pre-fill suggested values from existing options OR the
+        # parameter's defaults. Same pattern as the alk advisor.
+        suggested: dict[str, Any] = {}
+        for setting in (
+            "enabled", "heads", "source", "supplement_profile",
+            "spec_efficiency", "target_min", "target_max", "window_days",
+            "min_samples", "min_trend_days", "cooldown_days",
+            "dismiss_cooldown_days", "step_cap_pct", "hysteresis",
+            "min_samples_after_event", "correction_period_days",
+        ):
+            k = _opt_key(setting)
+            if k in opts:
+                suggested[k] = opts[k]
+            elif setting in defaults:
+                suggested[k] = defaults[setting]
+
+        schema = self.add_suggested_values_to_schema(
+            vol.Schema(schema_dict), suggested,
+        )
+        return self.async_show_form(
+            step_id=f"advisor_{param_id}",
             data_schema=schema,
         )
