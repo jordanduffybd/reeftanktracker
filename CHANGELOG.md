@@ -1,16 +1,39 @@
 # Changelog
 
-## 0.4.0
+> **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
-Headline: **ICP importer** — paste a public Triton showroom URL, pick the habitat + problem you want plan guidance for, get habitat-aware dose recommendations recomputed via Triton's own dose-calc API, and act on them from a new Dosing Plan dashboard view.
+## 0.4.0 — ICP importer + Dosing Plan view + sensor/parameter cleanup
 
-- **`reeftanktracker.import_triton_url` service:** ingests a public Triton showroom URL (e.g. `https://www.triton-lab.de/en/showroom/icp-oes/229019`), parses 39 element analyses + dose recommendations + the embedded ECS rule library + the share-time selected habitat/problem, writes element readings via `record_reading(source=icp)`, and persists the full test record (deduped by test_id). Deterministic parser — no LLM fallback.
-- **Habitat-aware dose recalc (Phase 1.5):** the service accepts optional `habitat` + `problem` arguments. For elements whose setpoint changes under the chosen habitat (currently only P / TNb per Triton's `eval.js`), we POST to Triton's public `:1024` API (`https://www.triton-lab.de:1024/api/eval_a/get_dosage_info`) and overwrite the rendered `corrective_dose` with the recomputed value. Tank volume comes from the alk advisor's `OPT_TANK_VOLUME_L` (default 425L). Other elements share one setpoint across habitats so their rendered dose is preserved.
-- **Active Dosing Plan sensor:** `sensor.reef_active_dosing_plan` exposes the most-recent ICP test's recommendations (importance-sorted, most-important first) plus the active habitat/problem/test_id metadata as attributes. State is the recommendation count.
-- **New "Dosing Plan" dashboard view:** surfaces the importance-sorted plan as a markdown card with star ratings + corrective-dose strings + product references, plus a summary card showing the active scenario (habitat, problem, test_id, sample_date, source URL). Re-running the import service with different habitat/problem arguments overwrites the active plan in place — useful when changing tank direction (e.g. Mixed Reef → SPS) or addressing a transient issue (e.g. Cyanobacteria).
-- **108 unit tests** — adds parser fixtures + ECS rule library extraction + per-habitat setpoint matrix coverage + `latest_icp_test` sort + setpoint-resolver pure tests. Real Triton showroom HTML fixture (795 KB, captured 2026-05-06) drives the parser tests.
+**Tested against:** HA Core `2026.4.4` (dev + prod), Supervisor `2026.04.2`, HAOS `17.2`.
 
-Phase 2 (habitat × problem matrix → recommended target ranges) and Phase 3 (full 39-element ICP test viewer dashboard) are deferred. Discovered the ECS rule-library identifier filter is a no-op for typical Triton data — every habitat × problem combo references ~43 element ids — so per-element setpoint recompute via the :1024 API is the only useful per-habitat differentiator.
+Headline: paste a Triton public-showroom URL, pick the habitat + problem you want plan guidance for, get habitat-aware dose recommendations recomputed via Triton's own dose-calc API, and act on them from a new Dosing Plan dashboard view.
+
+### ICP importer
+- **`reeftanktracker.import_triton_url` service:** ingests a Triton showroom URL (e.g. `https://www.triton-lab.de/en/showroom/icp-oes/229019`), parses 39 element analyses + dose recommendations + the embedded ECS rule library + the share-time selected habitat/problem. Writes element readings via `record_reading(source=icp)` and persists the full test record (deduped by `test_id`). Deterministic parser — no LLM fallback. Optional `sample_date` arg overrides the parser default (which falls back to today's UTC date).
+- **Habitat-aware dose recalc (Phase 1.5):** service accepts optional `habitat` + `problem` arguments. For elements whose setpoint changes under the chosen habitat (currently P + TNb per Triton's `eval.js`), POSTs to Triton's public `:1024` API (`https://www.triton-lab.de:1024/api/eval_a/get_dosage_info`) and overwrites the rendered `corrective_dose` with the recomputed value. Tank volume sourced from the alk advisor's `OPT_TANK_VOLUME_L` (default 425L). Other elements share one setpoint across habitats so their rendered dose is preserved. API failures fall back to the rendered dose silently.
+
+### Dosing Plan
+- **`sensor.reef_active_dosing_plan`** — TIMESTAMP device class. State is the **sample collection date** of the latest imported test (so HA renders it as "Last test: X days ago" rather than reflecting the import time). Importance-sorted recommendations + active scenario metadata (test_id, sample_date, imported_at, active_habitat, active_problem, rendered_for_habitat, rendered_for_problem, source URL, recommendations_count) exposed as attributes. Refreshes on `SIGNAL_ICP_TEST_RECORDED`.
+- **New "Dosing Plan" dashboard view:** markdown card with importance-sorted plan (star ratings + corrective-dose strings + product references) + summary card showing the active scenario + headline TIMESTAMP tile for "last test taken." Re-running the import service with different habitat/problem args overwrites the active plan in place — useful when changing tank direction (e.g. Mixed Reef → SPS) or addressing a transient issue (e.g. Cyanobacteria).
+
+### Sensor / parameter cleanup
+- Dropped redundant `TankHabitatSensor` + `TankProblemSensor` (the `select.reef_tank_habitat` / `select.reef_tank_problem` entities are the single source of truth — orphaned `sensor.reef_tank_tank_habitat` / `sensor.reef_tank_tank_problem` registry entries from prior installs need a one-time prune in Settings → Devices).
+- Moved `iodine` + `strontium` from `INPUT_PARAMETERS` → `ICP_ONLY_PARAMETERS` — neither is home-testable, so their number-input entities were misleading.
+- Dropped `drift` / `days_since_test` / `last_method` sensors for ICP-only params (no manual data → meaningless).
+- ICP-only sensors get an **"ICP" prefix** in friendly name AND entity_id (`sensor.reef_tank_icp_<element>_latest`, `..._last_sampled`) for visual separation from home-test data in entity lists and dashboards.
+
+### Other
+- Dev mirror script (`dev/tools/mirror_from_prod.py`) picks up the new kh-keeper-bridge sensors (`ph_pure_tank_water`, `ph_kh_test_water_reagent`, `refresh_ph_phase`, `refresh_ph_phase_eta`) — bumps the default mirror set from 45 → 49 entities.
+- **108 unit tests** (was 75 in 0.3.0). New tests cover the per-habitat setpoint resolver, `latest_icp_test` sort + missing `imported_at` handling, rule-library extraction, ICP-test deduplication. Real Triton showroom HTML fixture (795 KB, captured 2026-05-06) drives the parser tests.
+
+### Post-install actions
+1. **Restart the integration** so the new entities register.
+2. **One-time orphan prune:** Settings → Devices → Reef Tank Tracker → look for `sensor.reef_tank_tank_habitat` / `sensor.reef_tank_tank_problem` showing as Unavailable, delete them.
+3. **Swap pH `auto_source`:** Options → Auto-source sensors, change `pH` from `sensor.kh_keeper_ph` → `sensor.kh_keeper_ph_pure_tank_water` (per kh-keeper-bridge ≥ 0.1.13).
+4. **Drop-test calibrate the KH Keeper** before flipping `Enable advisor` ON — the alk advisor correctly downgrades confidence to "low" while the KH source's calibration warning is on.
+
+### Deferred
+Phase 2 (habitat × problem matrix → recommended target ranges) and Phase 3 (full 39-element ICP test viewer dashboard). The ECS rule-library identifier filter is a no-op for typical Triton data — every habitat × problem combo references ~43 element ids — so per-element setpoint recompute via the `:1024` API is the only useful per-habitat differentiator.
 
 ## 0.3.0
 
