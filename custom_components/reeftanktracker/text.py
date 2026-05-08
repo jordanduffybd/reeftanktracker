@@ -53,6 +53,20 @@ async def async_setup_entry(
             icon="mdi:swap-vertical",
             form_key="demand_reason",
         ),
+        AdvisorFormText(
+            coordinator,
+            unique_id="reef_advisor_form_icp_url",
+            name="ICP import URL",
+            icon="mdi:link",
+            form_key="icp_url",
+        ),
+        AdvisorFormText(
+            coordinator,
+            unique_id="reef_advisor_form_icp_sample_date",
+            name="ICP sample date (YYYY-MM-DD, blank = today)",
+            icon="mdi:calendar",
+            form_key="icp_sample_date",
+        ),
     ])
 
 

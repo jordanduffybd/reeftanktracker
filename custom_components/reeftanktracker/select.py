@@ -48,6 +48,8 @@ async def async_setup_entry(
         TankProblemSelect(coordinator),
         TankMethodSelect(coordinator),
         AdvisorDemandDirectionSelect(coordinator),
+        IcpImportHabitatSelect(coordinator),
+        IcpImportProblemSelect(coordinator),
     ])
 
 
@@ -156,3 +158,76 @@ class AdvisorDemandDirectionSelect(SelectEntity):
         # this, non-polling entities (`_attr_should_poll = False`) can
         # leave stale state in HA's state machine after a service call.
         self.async_write_ha_state()
+
+
+class _IcpImportFormSelect(SelectEntity):
+    """Base for the inline ICP-import form selects (habitat + problem).
+
+    State is held in the coordinator's advisor form blob. Defaults to
+    the current tank state (so the user just clicks Import without
+    re-picking habitat/problem unless they want a what-if scenario).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_info = _device_info()
+
+    def __init__(self, coordinator: ReefDataCoordinator) -> None:
+        self._coordinator = coordinator
+
+    @property
+    def _form_key(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def _tank_key(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def current_option(self) -> str | None:
+        # Form-level override wins; otherwise fall back to the tank's
+        # persistent state. So opening the dashboard for the first time
+        # shows your actual habitat/problem, not "Unknown".
+        v = self._coordinator.advisor_form_value(self._form_key)
+        if v in self._attr_options:
+            return str(v)
+        tank_v = self._coordinator.tank.get(self._tank_key)
+        if tank_v in self._attr_options:
+            return str(tank_v)
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        await self._coordinator.async_set_advisor_form_value(
+            self._form_key, option,
+        )
+        self.async_write_ha_state()
+
+
+class IcpImportHabitatSelect(_IcpImportFormSelect):
+    _attr_unique_id = "reef_advisor_form_icp_habitat"
+    _attr_name = "ICP import habitat"
+    _attr_icon = "mdi:waves"
+    _attr_options = HABITATS
+
+    @property
+    def _form_key(self) -> str:
+        return "icp_habitat"
+
+    @property
+    def _tank_key(self) -> str:
+        return "habitat"
+
+
+class IcpImportProblemSelect(_IcpImportFormSelect):
+    _attr_unique_id = "reef_advisor_form_icp_problem"
+    _attr_name = "ICP import problem"
+    _attr_icon = "mdi:alert-circle-outline"
+    _attr_options = PROBLEMS
+
+    @property
+    def _form_key(self) -> str:
+        return "icp_problem"
+
+    @property
+    def _tank_key(self) -> str:
+        return "problem"

@@ -34,6 +34,7 @@ from .const import (
     SERVICE_REMOVE_SUPPLEMENT_PROFILE,
     SERVICE_SET_HABITAT,
     SERVICE_SUBMIT_DEMAND_FORM,
+    SERVICE_SUBMIT_ICP_FORM,
     SERVICE_SUBMIT_WC_FORM,
     SOURCE_AUTO,
     SOURCE_ICP,
@@ -277,6 +278,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_SUBMIT_WC_FORM,
                 SERVICE_SUBMIT_DEMAND_FORM,
                 SERVICE_IMPORT_TRITON_URL,
+                SERVICE_SUBMIT_ICP_FORM,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -529,6 +531,52 @@ async def _async_register_services(
             reason, direction, magnitude,
         )
 
+    async def handle_submit_icp_import_form(call: ServiceCall) -> None:
+        """Read the dashboard's ICP-import form fields and call
+        import_triton_url. Mirror of submit_water_change_form — the
+        dashboard's call-service row can't render templates in
+        service_data, so we read the form entity states server-side.
+
+        URL is required (raises HomeAssistantError if blank).
+        Habitat / problem default to the current tank state if the form
+        selects haven't been changed (those selects fall back to tank
+        state in their `current_option`, so the form_value lookup here
+        does the same — explicit fallback to coordinator.tank).
+        Sample_date is optional; blank → service defaults to today UTC.
+        """
+        url = (coordinator.advisor_form_value("icp_url") or "").strip()
+        if not url:
+            from homeassistant.exceptions import HomeAssistantError
+            raise HomeAssistantError(
+                "ICP import URL is empty — paste a Triton showroom URL "
+                "into the form field before submitting."
+            )
+
+        habitat = (
+            coordinator.advisor_form_value("icp_habitat")
+            or coordinator.tank.get("habitat")
+        )
+        problem = (
+            coordinator.advisor_form_value("icp_problem")
+            or coordinator.tank.get("problem")
+        )
+        sample_date = (
+            coordinator.advisor_form_value("icp_sample_date") or ""
+        ).strip() or None
+
+        from .icp_importer import import_triton_url
+        try:
+            summary = await import_triton_url(
+                hass, coordinator, url,
+                habitat=habitat, problem=problem,
+                sample_date=sample_date,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.exception("submit_icp_import_form failed: %s", exc)
+            from homeassistant.exceptions import HomeAssistantError
+            raise HomeAssistantError(str(exc)) from exc
+        _LOGGER.warning("ICP form import: %s", summary)
+
     async def handle_capture_snapshot(call: ServiceCall) -> None:
         """Capture an alk advisor snapshot.
 
@@ -641,4 +689,7 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_IMPORT_TRITON_URL, handle_import_triton_url,
             schema=IMPORT_TRITON_URL_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_ICP_FORM, handle_submit_icp_import_form,
         )
