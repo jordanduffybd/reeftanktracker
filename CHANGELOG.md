@@ -2,6 +2,55 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.4.3 — Target ranges Options page + ICP debug-bundle parse trace + alk advisor robustness
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Alk advisor dashboard — graceful handling when devices are off
+
+The Alk Advisor view used to render ~20 rows of "Unknown" when ReefBeat dosers were offline (because the algorithm returns None for most computed values). The user-facing dashboard now adapts:
+
+- **Headline:** when state is `unknown` / `unavailable`, shows a "⏸️ Advisor paused" markdown banner with the actionable `reason` text large + prominent. When state is a real number, shows the regular suggested-daily-dose tile. (HA's `conditional` card switches between them automatically.)
+- **Show your work:** rebuilt as a markdown card that only renders rows whose value is meaningful (not None / "unknown" / empty). Always-shown rows (target band, spec efficiency, calibration warning, confidence, reason) stay visible since those are configuration, not computed. Computed rows (KH median, current dose, suggested dose, observed slope, samples used, etc.) appear only when populated.
+
+Result: when ReefBeat is off for maintenance, the dashboard collapses to a clean banner + 5 config rows instead of 20 rows of "Unknown". When ReefBeat returns, the full work breakdown appears automatically.
+
+### Alk advisor robustness against transient ReefBeat outages
+
+Caught during the user's 2026-05-08 ReefBeat maintenance window: when the alk doser's `daily_dose` sensor went briefly unavailable during an integration reload, the advisor sensor returned `state=None` (rendered as "unknown" in HA) AND failed to auto-recover when the doser came back. Two fixes:
+
+- **Reorder advisor's exit branches.** `current_dose_mL` is now checked at the top of `compute_recommendation`. If the doser is unreachable, the user sees an actionable message ("Alk doser daily-dose sensor is unreachable or zero (check ReefBeat connectivity). Advisor will resume automatically when the sensor returns.") regardless of whether they're in learning mode, in-band, or trending. Previously a transient outage during learning mode would leave a stale "Learning mode after demand change..." reason while the actual cause was the doser sensor.
+- **Subscribe to upstream state changes.** `AlkAdvisorSensor.async_added_to_hass` now also subscribes to state-change events on the configured `alk_head` sensors, the `kh_source` sensor, and the `calibration_warning` binary sensor (in addition to the existing `SIGNAL_ADVISOR_UPDATED` dispatcher). Without this, the sensor stayed stuck on the stale `None` until something else (an ack/dismiss/snapshot) fired the dispatcher. Now the moment ReefBeat comes back, the advisor recomputes and shows the real recommendation.
+
+Regression test added covering the "current_dose=None during learning mode" scenario.
+
+
+
+### Target ranges Options page
+
+New "Target ranges" entry in Settings → Devices → Reef Tank Tracker → Configure. Per-parameter min/max override for the 10 home-testable parameters (KH, pH, Calcium, Magnesium, Nitrate, Nitrite, Ammonia, Phosphate, Salinity, Temperature). Defaults pre-fill from `parameters.py`; empty fields fall back to defaults. Stored in `entry.options` as `target_<param_id>_min` / `target_<param_id>_max`.
+
+New `coordinator.get_target_range(param_id) -> (min, max)` helper resolves user override with graceful fallback:
+- Both override values set → use them
+- Partial override (only min OR only max) → fall back to both defaults (avoids inverted bands)
+- Invalid override (non-numeric) → fall back to defaults
+- Unknown parameter → `(None, None)`
+
+Every `_latest` sensor now exposes three new attributes:
+- `target_min` — effective min (user override or static default)
+- `target_max` — effective max
+- `in_target_band` — `True` / `False` / `None` (`None` when value or band unknown)
+
+This is the foundation for: per-element advisors (Ca, Mg) reading their own bands, ICP Phase 2 (auto-set targets per habitat from Triton's matrix), and dashboard tile-color hints. The alk advisor's existing `OPT_TARGET_MIN/MAX` is unchanged — KH targets continue to live on the advisor page for now.
+
+### ICP debug-bundle parse trace
+
+The `_write_debug_bundle` path (called when `parse_triton_showroom` raises `ParserError`) now writes a `parse_trace.txt` alongside the existing `url.txt`, `page.html`, `error.txt`. The trace records what the parser COULD identify before giving up: html_bytes, contains_triton_marker, element_row_count, dose_group_count, rule_library_present, habitat_dropdown_present, and the first 10 element symbols seen. If Triton's HTML ever shifts, the trace tells us at a glance which selectors stopped matching.
+
+### Tests
+
+116 tests passing (was 108). Adds 5 coordinator tests for `get_target_range` (default fallback, override wins, partial override falls back, unknown param, invalid override) and 3 importer tests for `_build_parse_trace` (real fixture, empty input, non-Triton page).
+
 ## 0.4.2 — inline ICP import form on the Dosing Plan dashboard
 
 **Tested against:** HA Core `2026.4.4` (dev).

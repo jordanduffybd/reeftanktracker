@@ -246,6 +246,38 @@ class ReefDataCoordinator:
     def get_advisor_config(self) -> dict[str, Any]:
         return dict(self._advisor_config)
 
+    def get_target_range(
+        self, param_id: str,
+    ) -> tuple[float | None, float | None]:
+        """Return the (min, max) target range for a parameter.
+
+        User overrides from the Options-flow "Target ranges" page win;
+        otherwise we fall back to the static `default_target_min/max`
+        in parameters.py. Returns (None, None) if neither is set
+        (e.g. for ICP-only params with no default and no override).
+
+        The override keys live alongside advisor settings under
+        `target_<param_id>_min` and `target_<param_id>_max`. We read
+        from `_advisor_config` because that's already populated from
+        `entry.options` at setup; no second config wiring needed.
+        """
+        from .parameters import get_parameter
+        cfg = self._advisor_config
+        ovr_min = cfg.get(f"target_{param_id}_min")
+        ovr_max = cfg.get(f"target_{param_id}_max")
+        if ovr_min is not None and ovr_max is not None:
+            try:
+                return float(ovr_min), float(ovr_max)
+            except (TypeError, ValueError):
+                pass  # fall through to defaults
+        param = get_parameter(param_id)
+        if param is None:
+            return (None, None)
+        return (
+            param.get("default_target_min"),
+            param.get("default_target_max"),
+        )
+
     # ------------------------------------------------------------------
     # Dashboard flag
     # ------------------------------------------------------------------

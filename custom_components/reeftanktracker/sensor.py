@@ -172,20 +172,43 @@ class ReefLatestSensor(_ReefSensorBase):
     def extra_state_attributes(self) -> dict[str, Any]:
         latest = self._coordinator.latest_reading(self._param["id"])
         auto_src = self._coordinator.get_auto_source(self._param["id"])
-        if not latest:
-            return {
-                "source": "auto" if auto_src else None,
-                "auto_source_entity": auto_src,
-            }
-        return {
-            "source": latest["source"],
-            "method": latest.get("method"),
-            "sample_taken_at": latest["sample_taken_at"],
-            "recorded_at": latest["recorded_at"],
-            "test_id": latest.get("test_id"),
-            "notes": latest.get("notes"),
+        # Effective target range (user override from Options-flow
+        # "Target ranges" page wins over the static default in
+        # parameters.py). Surfaced as attributes on every latest
+        # sensor so dashboards and automations can reason about
+        # in/out-of-band without hardcoding numbers.
+        target_min, target_max = self._coordinator.get_target_range(
+            self._param["id"]
+        )
+        attrs: dict[str, Any] = {
             "auto_source_entity": auto_src,
+            "target_min": target_min,
+            "target_max": target_max,
         }
+        if not latest:
+            attrs["source"] = "auto" if auto_src else None
+        else:
+            attrs.update({
+                "source": latest["source"],
+                "method": latest.get("method"),
+                "sample_taken_at": latest["sample_taken_at"],
+                "recorded_at": latest["recorded_at"],
+                "test_id": latest.get("test_id"),
+                "notes": latest.get("notes"),
+            })
+        # Compute in_target_band only when both the value AND the band
+        # are known. None propagates so consumers can distinguish
+        # "no target set" from "out of target".
+        value = self.native_value
+        if (
+            value is not None
+            and target_min is not None
+            and target_max is not None
+        ):
+            attrs["in_target_band"] = bool(target_min <= value <= target_max)
+        else:
+            attrs["in_target_band"] = None
+        return attrs
 
 
 class ReefLatestMethodSensor(_ReefSensorBase):
@@ -332,10 +355,43 @@ class AlkAdvisorSensor(SensorEntity):
                 self.hass, SIGNAL_ADVISOR_UPDATED, self._handle_update
             )
         )
+        # Also subscribe to state changes on the configured upstream
+        # sensors (alk heads + KH source + calibration warning). Without
+        # this, a transient ReefBeat outage can leave the advisor stuck
+        # on a stale `state=None` (because `_sum_dose_mL` returned None
+        # during the outage and SIGNAL_ADVISOR_UPDATED doesn't refire
+        # when the doser comes back). Tracking state changes lets the
+        # sensor recompute the moment upstream data returns.
+        from homeassistant.helpers.event import async_track_state_change_event
+        cfg = self._coordinator.get_advisor_config()
+        upstream: list[str] = []
+        upstream.extend(cfg.get(alk_advisor.OPT_ALK_HEADS) or [])
+        kh_src = cfg.get(alk_advisor.OPT_KH_SOURCE)
+        if kh_src:
+            upstream.append(kh_src)
+        cal_warn = cfg.get(alk_advisor.OPT_CALIBRATION_WARNING_ENTITY)
+        if cal_warn:
+            upstream.append(cal_warn)
+        if upstream:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, upstream, self._handle_upstream_change,
+                )
+            )
         self.async_write_ha_state()
 
     @callback
     def _handle_update(self, _param_id: str | None = None) -> None:
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_upstream_change(self, _event) -> None:
+        """An alk-head / KH source / calibration-warning sensor changed
+        state — recompute. This is what auto-recovers the advisor after
+        a ReefBeat outage: as soon as the doser sensor flips from
+        unavailable back to a number, we re-render with current_dose
+        populated and the user sees the "doser unreachable" reason
+        replaced by a real recommendation (or learning-mode message)."""
         self.async_write_ha_state()
 
     def _compute(self) -> Recommendation | None:

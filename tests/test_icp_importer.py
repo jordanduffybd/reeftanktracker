@@ -17,6 +17,7 @@ from reeftanktracker.icp_importer import (
     ParserError,
     TRITON_PER_HABITAT_SETPOINTS,
     TRITON_PROBLEM_LABEL_MAP,
+    _build_parse_trace,
     _extract_test_id_from_url,
     _setpoint_for_habitat,
     element_identifiers_for_combo,
@@ -370,3 +371,48 @@ def test_all_mapped_param_ids_match_parameters_py():
         f"TRITON_ELEMENT_TO_PARAM_ID points at param ids not in "
         f"parameters.py: {missing}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Debug-bundle parse trace
+# ---------------------------------------------------------------------------
+def test_parse_trace_summarises_real_fixture(triton_html: str):
+    """The trace should report counts that match the parser's actual
+    success on the fixture: 39 elements, dose groups present, rule
+    library present. If these drift in a future Triton page change,
+    a parse failure will dump this trace into the debug bundle and
+    we'll see exactly which selectors stopped matching."""
+    trace = _build_parse_trace(triton_html)
+    assert "html_bytes:" in trace
+    assert "contains_triton_marker: True" in trace
+    assert "element_row_count: 39" in trace
+    # First10 list is in document order (heavy metals first in Triton's
+    # layout). Just assert it's non-empty and looks like element symbols.
+    assert "element_symbols_first10:" in trace
+    assert "(none)" not in trace.split("element_symbols_first10:")[1].splitlines()[0]
+    # Dose blocks present in the fixture (groups 1/2/4/5)
+    assert "dose_group_count:" in trace
+    assert "rule_library_present: True" in trace
+    assert "habitat_dropdown_present: True" in trace
+
+
+def test_parse_trace_handles_empty_input():
+    """Empty HTML — every probe returns 0 / False / (none) instead of
+    raising. Trace must still be a usable string for the user to read."""
+    trace = _build_parse_trace("")
+    assert "html_bytes: 0" in trace
+    assert "contains_triton_marker: False" in trace
+    assert "element_row_count: 0" in trace
+    assert "element_symbols_first10: (none)" in trace
+    assert "rule_library_present: False" in trace
+
+
+def test_parse_trace_handles_non_triton_page():
+    """A page that isn't Triton's lab report — `contains_triton_marker`
+    flips to False so the user can quickly tell their URL was wrong."""
+    trace = _build_parse_trace(
+        "<html><body>some other lab's report</body></html>",
+    )
+    assert "html_bytes:" in trace
+    assert "contains_triton_marker: False" in trace
+    assert "element_row_count: 0" in trace

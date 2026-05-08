@@ -198,15 +198,27 @@ def _resolve_auto_sources(entry: ConfigEntry) -> dict[str, str]:
 
 
 def _resolve_advisor_config(entry: ConfigEntry) -> dict[str, Any]:
-    """Pull all advisor-section options into a flat dict.
+    """Pull advisor-section + target-range options into a flat dict.
 
-    Only pass through keys the advisor knows about (everything in
-    ADVISOR_DEFAULTS). Empty values fall back to the algorithm's defaults.
+    Pass through:
+    - Everything in ADVISOR_DEFAULTS (the alk advisor's tunables)
+    - Any `target_<param_id>_min` / `target_<param_id>_max` override
+      from the Target Ranges Options page — these are read by
+      `coordinator.get_target_range` to override the static defaults
+      in parameters.py
+
+    Empty values fall back to defaults (algorithm-side for advisor
+    keys, parameters.py-side for target ranges).
     """
     out: dict[str, Any] = {}
     for key in ADVISOR_DEFAULTS:
         if key in entry.options:
             out[key] = entry.options[key]
+    for key, value in entry.options.items():
+        if key.startswith("target_") and (
+            key.endswith("_min") or key.endswith("_max")
+        ):
+            out[key] = value
     return out
 
 

@@ -386,7 +386,42 @@ def test_zero_current_dose_returns_unavailable():
     )
     assert rec.state is None
     assert rec.confidence == "insufficient"
-    assert "zero" in rec.reason.lower() or "unknown" in rec.reason.lower()
+    # Updated message: "doser unreachable or zero" replaces the older
+    # "zero or unknown — cannot compute". Both old and new should still
+    # convey "doser is missing / zero".
+    assert "unreachable" in rec.reason.lower() or "zero" in rec.reason.lower()
+
+
+def test_none_current_dose_reports_doser_unreachable_not_learning_mode():
+    """When the alk doser is unavailable AND we're inside the
+    demand-change learning window, the advisor must report the
+    DOSER issue, not a stale "learning mode" message. Without this
+    short-circuit, a transient ReefBeat outage during learning mode
+    leaves the user staring at "Learning mode after demand change..."
+    while the actual cause is the doser sensor being unreachable.
+
+    Regression for the prod issue observed 2026-05-08 where the user
+    turned off ReefBeat for maintenance and saw the advisor stuck on
+    `state=unknown` with a misleading learning-mode reason."""
+    # Demand change 1 day ago + insufficient time to exit learning mode
+    now = _now()
+    cfg = AdvisorConfig(min_samples_after_event=3)
+    rec = compute_recommendation(
+        now=now,
+        snapshots=_stable(now, kh=8.7, dose=3.0, days=2),
+        current_dose_mL=None,  # ← ReefBeat doser sensor unreachable
+        cfg=cfg,
+        demand_changes=[DemandChange(
+            at=now - timedelta(days=1),
+            reason="New frags added",
+            expected_direction="increase",
+        )],
+    )
+    assert rec.state is None
+    assert rec.confidence == "insufficient"
+    # The user must see the actionable cause, NOT the stale demand-change message
+    assert "unreachable" in rec.reason.lower() or "doser" in rec.reason.lower()
+    assert "learning mode" not in rec.reason.lower()
 
 
 # ---------------------------------------------------------------------------
