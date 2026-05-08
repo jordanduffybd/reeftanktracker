@@ -466,6 +466,10 @@ class ParameterAdvisorSensor(SensorEntity):
         self._param_id = param_id
         self._param_advisor = param_advisor
         self._last: Recommendation | None = None
+        # One-shot guard: backfill fires once per HA session when
+        # the advisor sees zero snapshots. Without this, every
+        # render would queue another backfill (idempotent but wasteful).
+        self._backfilled = False
         defaults = param_advisor.PARAM_DEFAULTS.get(param_id, {})
         # ppm for Ca/Mg/NO3/PO4 — comes from PARAM_DEFAULTS; the algorithm
         # itself is unit-agnostic.
@@ -499,12 +503,7 @@ class ParameterAdvisorSensor(SensorEntity):
         from . import param_advisor
         cfg = self._coordinator.get_advisor_config()
         heads_key = param_advisor.opt_key(self._param_id, "heads")
-        source_key = param_advisor.opt_key(self._param_id, "source")
-        upstream: list[str] = []
-        upstream.extend(cfg.get(heads_key) or [])
-        src = cfg.get(source_key)
-        if src:
-            upstream.append(src)
+        upstream: list[str] = list(cfg.get(heads_key) or [])
         if upstream:
             self.async_on_remove(
                 async_track_state_change_event(
@@ -529,8 +528,36 @@ class ParameterAdvisorSensor(SensorEntity):
         rec = self._param_advisor.compute_for_param(
             self.hass, self._coordinator, self._param_id,
         )
+        # Cold-start backfill: if the advisor is enabled but has no
+        # snapshots yet (typical right after first install), fire a
+        # one-shot backfill from the historical Reading records.
+        # Re-compute after backfill so the user sees the actual state
+        # rather than "Only 0 of 4 required Calcium snapshots..." until
+        # they manually call a service.
+        if (
+            rec is not None
+            and rec.confidence == "insufficient"
+            and not self._backfilled
+        ):
+            self._backfilled = True
+            self.hass.async_create_task(self._async_backfill_and_refresh())
         self._last = rec
         return rec
+
+    async def _async_backfill_and_refresh(self) -> None:
+        """Run a one-shot snapshot backfill from existing Reading
+        records, then write the updated state. Logged at INFO so the
+        user sees the cold-start path firing in the integration log."""
+        try:
+            added = await self._coordinator.async_backfill_advisor_snapshots(
+                self._param_id,
+            )
+            if added:
+                # Re-render with the new snapshots in storage
+                self.async_write_ha_state()
+        except Exception:  # noqa: BLE001
+            # Best-effort — never let a backfill failure break the sensor
+            pass
 
     @property
     def native_value(self) -> float | None:
@@ -563,9 +590,6 @@ class ParameterAdvisorSensor(SensorEntity):
         attrs["dose_head_entity_ids"] = list(
             cfg.get(opt_key(self._param_id, "heads")) or []
         )
-        attrs["source_entity"] = cfg.get(
-            opt_key(self._param_id, "source"),
-        ) or ""
         return attrs
 
 

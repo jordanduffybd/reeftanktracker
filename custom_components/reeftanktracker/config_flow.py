@@ -407,6 +407,10 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             # Doser heads: same EntitySelector filter as alk
             # — domain=sensor, device_class=volume (Reefbeat exposes
             # daily_dose entities with mL units + volume class).
+            # The form description warns the user to pick `_daily_dose`
+            # entities (NOT `_auto_dosed_today`) — both have
+            # device_class=volume so HA can't distinguish them at the
+            # selector level.
             vol.Optional(_opt_key("heads")): EntitySelector(
                 EntitySelectorConfig(
                     domain=["sensor"],
@@ -414,13 +418,12 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                     multiple=True,
                 ),
             ),
-            # Source sensor — for params with auto-source (KH today;
-            # future Mastertronic Essential for Ca/Mg/NO3/PO4). Until
-            # then, leave empty and the advisor reads snapshots from
-            # manual `record_reading` entries instead.
-            vol.Optional(_opt_key("source")): EntitySelector(
-                EntitySelectorConfig(domain=["sensor", "input_number"]),
-            ),
+            # NOTE: "source" sensor field intentionally REMOVED in 0.5.1.
+            # The non-KH advisors don't use a real-time source sensor —
+            # they read snapshots from manual `record_reading` entries.
+            # The field was confusing UX and unused. Will reintroduce
+            # if/when a Ca/Mg/NO3/PO4 auto-tester (Mastertronic Essential)
+            # arrives and we want to poll it.
             vol.Optional(_opt_key("supplement_profile")): SelectSelector(
                 SelectSelectorConfig(
                     options=profile_options,
@@ -463,7 +466,7 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
         # parameter's defaults. Same pattern as the alk advisor.
         suggested: dict[str, Any] = {}
         for setting in (
-            "enabled", "heads", "source", "supplement_profile",
+            "enabled", "heads", "supplement_profile",
             "spec_efficiency", "target_min", "target_max", "window_days",
             "min_samples", "min_trend_days", "cooldown_days",
             "dismiss_cooldown_days", "step_cap_pct", "hysteresis",

@@ -63,15 +63,27 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "hysteresis": 5.0,
         # Same step cap as alk — 10% is conservative across all elements.
         "step_cap_pct": 10.0,
-        # 5 days — Holmes-Farley says 3–5 days minimum to observe a Ca
-        # dose change result.
-        "cooldown_days": 5.0,
-        "dismiss_cooldown_days": 2.0,
-        "window_days": 7,
-        "min_samples": 5,
+        # ~3 weeks cooldown — Holmes-Farley's 5-day rule applies for
+        # daily-tested cadence. With manual once-per-week testing, you
+        # need 2–3 weekly readings post-change to see the effect, hence
+        # the longer cooldown.
+        "cooldown_days": 21.0,
+        "dismiss_cooldown_days": 7.0,
+        # Window + min_samples calibrated for MANUAL-ONCE-A-WEEK
+        # testing cadence (the realistic baseline until the user has
+        # an auto-tester for Ca). 42-day window with 4 readings = ~6
+        # weeks of weekly tests, with 1-2 misses tolerated. If/when
+        # an auto-tester is added (Mastertronic Essential), the user
+        # can shrink window_days back to 7 and bump min_samples to 5
+        # via the Options form to get faster response cycles.
+        "window_days": 42,
+        "min_samples": 4,
         "min_trend_days": 3,
         "min_samples_after_event": 3,
-        "correction_period_days": 7.0,
+        # Spread corrections over 3 weeks (3 weekly testing cycles) —
+        # produces gentler per-day dose changes appropriate for the
+        # manual-test feedback loop.
+        "correction_period_days": 21.0,
         "empirical_drift_pct": 50.0,
         "wc_settling_hours": 24.0,
         # Foundation A: 1 mL per 100L raises Ca by 2 ppm.
@@ -79,7 +91,9 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # ppm — used in `Reason` strings.
         "value_unit": "ppm",
     },
-    # 0.5.1 will add "magnesium" with its own (slower) cooldown.
+    # 0.5.1+ adds "magnesium", "nitrate", "phosphate" with the same
+    # manual-cadence defaults but param-specific target bands and
+    # cooldown windows.
 }
 
 

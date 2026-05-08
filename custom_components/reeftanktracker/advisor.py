@@ -638,8 +638,9 @@ def compute_recommendation(
             state=None, suggested=None,
             confidence="insufficient",
             reason=(
-                f"Only {samples_used} of {cfg.min_samples} required KH "
-                f"snapshots in the {cfg.window_days}-day window."
+                f"Only {samples_used} of {cfg.min_samples} required "
+                f"{cfg.param_label} snapshots in the {cfg.window_days}-day "
+                f"window."
             ),
         )
 

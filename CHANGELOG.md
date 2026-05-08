@@ -2,6 +2,50 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.1 — Calcium advisor UX polish (manual cadence + cold-start backfill + per-element potency)
+
+**Tested against:** HA Core `2026.4.4` (dev). Focused UX pass on the 0.5.0 Calcium advisor based on real-prod feedback. **Mg / NO3 / PO4 advisors deferred to 0.5.2** — Ca needed to be solid first.
+
+### Manual-cadence defaults
+
+The 0.5.0 defaults assumed daily testing (window_days=7, min_samples=5, cooldown=5d, correction_period=7d). For users testing **once a week manually** (until Mastertronic Essential or similar arrives), this never accumulates enough samples. New defaults for Calcium:
+
+| Setting | 0.5.0 (daily) | 0.5.1 (weekly) | Rationale |
+|---|---|---|---|
+| `window_days` | 7 | **42** | ~6 weeks for 4 weekly readings, with 1-2 missed weeks tolerated |
+| `min_samples` | 5 | **4** | 4 weekly readings = 4 weeks of signal |
+| `cooldown_days` | 5 | **21** | 3 weekly testing cycles per cooldown |
+| `correction_period_days` | 7 | **21** | Spread corrections over 3 weeks → gentler dose changes |
+
+If you have an auto-tester, you can shrink window/min_samples back via the Options form for faster response cycles. The defaults adapt to the manual-cadence floor.
+
+### Cold-start backfill from existing readings
+
+The 0.5.0 advisor only captured snapshots from `record_reading` calls made AFTER the advisor was enabled, leaving `samples_used: 0` until you record a fresh reading. New `coordinator.async_backfill_advisor_snapshots(param_id)` synthesizes snapshots from existing Reading records (last 90 days, one per sample date, multiple readings same day averaged). Auto-fires once per HA session when the advisor sees zero snapshots — turns "you'll see a recommendation in a few weeks" into "you'll see one as soon as you've got history".
+
+### Per-element supplement potency
+
+Added `eff_per_mL_per_100L` field to the supplement profile schema. Generic float (units depend on `param_id`):
+- Calcium: ppm Ca per mL per 100L (Foundation A = 2.0)
+- Magnesium: ppm Mg per mL per 100L (Foundation C = 1.0)
+- Nitrate / Phosphate: negative values for removers (0.5.2)
+
+The advisor's `spec_efficiency_source` attribute now correctly says "profile: Red Sea Foundation A" instead of the misleading "default (...has no potency)" when a profile is selected with the field populated.
+
+### Form UX
+
+- **Per-field labels and descriptions** for the Calcium dosing advisor page in `strings.json` / `translations/en.json`. Fields now show clear titles ("Calcium dose head sensors") + helper text. Specifically warns about picking `_daily_dose` (NOT `_auto_dosed_today`) for the doser head sensor.
+- **Removed unused "source" field** from the per-element advisor page. Was confusing UX and unused — the source for non-KH advisors comes from manual readings, not a real-time sensor. Will reintroduce when an auto-tester (Mastertronic Essential) lands.
+
+### Algorithm message fixes
+
+- `"Only 0 of 5 required KH snapshots in the 7-day window"` → `"Only 0 of 5 required Calcium snapshots in the 7-day window"` (param-aware via `cfg.param_label`).
+
+### Migration
+
+- Existing supplement profiles registered before 0.5.1 default to `eff_per_mL_per_100L=None`. Calcium/Magnesium advisors fall back to the parameter's built-in default potency (Foundation A=2.0; Foundation C=1.0) until the user re-registers with explicit `eff_per_mL_per_100L`.
+- After install, recommend re-registering Foundation A and Foundation C with `eff_per_mL_per_100L: 2.0` and `1.0` respectively for cleaner attribute output.
+
 ## 0.5.0 — Calcium advisor + generalized per-element framework
 
 **Tested against:** HA Core `2026.4.4` (dev).

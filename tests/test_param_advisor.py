@@ -177,21 +177,31 @@ def test_opt_key_format():
 # PARAM_DEFAULTS sanity
 # ---------------------------------------------------------------------------
 def test_calcium_defaults_present_and_research_aligned():
-    """Sanity-check the calcium defaults match the research
-    consensus (see memory: reference_reef_dosing_research.md)."""
+    """Sanity-check the calcium defaults match the research consensus
+    (see memory: reference_reef_dosing_research.md) AND the manual-
+    once-a-week testing cadence assumption (0.5.1+)."""
     ca = param_advisor.PARAM_DEFAULTS["calcium"]
     # Target 420-440 (SPS-friendly per Holmes-Farley)
     assert ca["target_min"] == 420.0
     assert ca["target_max"] == 440.0
     # ±10% step cap, conservative across reef types
     assert ca["step_cap_pct"] == 10.0
-    # 5 days minimum to observe a Ca dose change result
-    assert ca["cooldown_days"] == 5.0
+    # 21 days — manual once-a-week testing means 3 weekly cycles per
+    # cooldown. Holmes-Farley's 5-day rule applies for daily-tested
+    # cadence (auto-tester); we tune for the slower manual flow.
+    assert ca["cooldown_days"] == 21.0
     # 5 ppm hysteresis (within test-kit noise)
     assert ca["hysteresis"] == 5.0
     # Foundation A: 2 ppm Ca per mL per 100L
     assert ca["default_eff_per_mL_per_100L"] == 2.0
     assert ca["value_unit"] == "ppm"
+    # Manual-cadence window: 42 days = ~6 weeks for 4 weekly readings
+    # to accumulate (with 1-2 missed weeks tolerated).
+    assert ca["window_days"] == 42
+    assert ca["min_samples"] == 4
+    # Correction spread over 3 weeks → gentler dose changes appropriate
+    # for the manual-test feedback loop.
+    assert ca["correction_period_days"] == 21.0
 
 
 def test_param_label_and_unit_propagate_to_advisor_config():

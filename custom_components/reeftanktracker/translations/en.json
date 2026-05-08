@@ -36,7 +36,36 @@
       },
       "advisor_calcium": {
         "title": "Calcium dosing advisor",
-        "description": "Configure the Calcium dosing recommendation engine. Same algorithm as the alk advisor — 7-day rolling median, ±10% step cap, 5-day cooldown, demand-change-aware. Snapshots come from your manual Calcium readings (no auto-source until Mastertronic Essential). Pick a Calcium-targeting supplement profile from the dropdown (e.g. Red Sea Foundation A) or use 'Custom' with a manual potency value. Default Foundation A potency: 2 ppm Ca per mL per 100L. Recommendation-only — never writes to your doser. SAFETY: refuses to recommend raising Ca when alkalinity is above 10 dKH or magnesium is below 1200 ppm (snowstorm risk)."
+        "description": "Configure the Calcium dosing recommendation engine. Recommendation-only — never writes to your doser. Defaults are tuned for **manual once-a-week testing** (42-day window, 4 readings, 21-day cooldown). If you have an auto-tester (e.g. Mastertronic Essential) you can shorten window_days to 7 and bump min_samples to 5 for faster response cycles. Snapshots come from your manual Calcium readings — make sure you've recorded several readings via the Test Session view before expecting a recommendation.",
+        "data": {
+          "advisor_calcium_enabled": "Enable Calcium advisor",
+          "advisor_calcium_heads": "Calcium dose head sensors",
+          "advisor_calcium_supplement_profile": "Supplement profile",
+          "advisor_calcium_spec_efficiency": "Spec efficiency (ppm Ca per mL per 100L)",
+          "advisor_calcium_target_min": "Target band low (ppm)",
+          "advisor_calcium_target_max": "Target band high (ppm)",
+          "advisor_calcium_window_days": "Rolling window length (days)",
+          "advisor_calcium_min_samples": "Minimum readings required to suggest",
+          "advisor_calcium_min_trend_days": "Consecutive readings outside band before adjusting",
+          "advisor_calcium_cooldown_days": "Cooldown after acknowledging a change (days)",
+          "advisor_calcium_dismiss_cooldown_days": "Cooldown after dismissing a suggestion (days)",
+          "advisor_calcium_step_cap_pct": "Max dose change per recommendation (%)",
+          "advisor_calcium_hysteresis": "Hysteresis around target band (ppm)",
+          "advisor_calcium_min_samples_after_event": "Required readings after demand change before resuming",
+          "advisor_calcium_correction_period_days": "Spread the correction over (days)"
+        },
+        "data_description": {
+          "advisor_calcium_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses Calcium (e.g. `sensor.rsdose4_<serial>_head_<N>_daily_dose`). NOT `_auto_dosed_today` (today's actual dose) and NOT `_supplement` (the supplement label). Multiple heads are summed.",
+          "advisor_calcium_supplement_profile": "Pick a Calcium-targeting profile registered via `add_supplement_profile` (e.g. Red Sea Foundation A). Use 'Custom' to enter a manual potency below.",
+          "advisor_calcium_spec_efficiency": "Vendor-published potency. Foundation A = 2 ppm Ca raise per mL per 100L tank volume. Used when 'Custom' is selected above, or as fallback for profiles without a stored potency.",
+          "advisor_calcium_target_min": "SPS-friendly default 420 ppm. Holmes-Farley says 380–450 is fine for any reef; widen for LPS-dominant tanks.",
+          "advisor_calcium_target_max": "SPS-friendly default 440 ppm.",
+          "advisor_calcium_window_days": "How far back the algorithm looks. **Default 42 days** for manual once-a-week testing — gives ~6 weeks for 4 weekly readings to accumulate. Reduce to 7 if you have a Ca auto-tester.",
+          "advisor_calcium_min_samples": "Default 4 weekly readings. Tolerates 1–2 missed weeks within the window.",
+          "advisor_calcium_cooldown_days": "Default 21 days (3 weekly testing cycles) — gives time to see the effect of a dose change before the advisor suggests another.",
+          "advisor_calcium_step_cap_pct": "Default 10% — conservative across reef types. Holmes-Farley: never raise Ca more than 25 ppm/day equivalent.",
+          "advisor_calcium_hysteresis": "Default 5 ppm — within typical test-kit noise (Salifert/Hanna ULR ±10–20 ppm). Catches real drifts without chasing kit jitter."
+        }
       }
     }
   },
