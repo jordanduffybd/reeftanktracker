@@ -214,3 +214,206 @@ def test_param_label_and_unit_propagate_to_advisor_config():
     cfg = param_advisor._build_config(coord, "calcium", spec_eff=2.0)
     assert cfg.param_label == "Calcium"
     assert cfg.value_unit == "ppm"
+
+
+# ---------------------------------------------------------------------------
+# Magnesium defaults (added 0.5.2)
+# ---------------------------------------------------------------------------
+def test_magnesium_defaults_present():
+    """Mg should be registered in PARAM_DEFAULTS with target 1300-1350
+    (SPS-friendly per Holmes-Farley) and Foundation C potency 1.0
+    ppm/mL/100L."""
+    mg = param_advisor.PARAM_DEFAULTS["magnesium"]
+    assert mg["target_min"] == 1300.0
+    assert mg["target_max"] == 1350.0
+    # Mg test kits are coarser than Ca — 20 ppm hysteresis catches real
+    # drifts within ±20-30 ppm typical kit noise.
+    assert mg["hysteresis"] == 20.0
+    # Foundation C: 1 mL per 100L raises Mg by 1 ppm
+    assert mg["default_eff_per_mL_per_100L"] == 1.0
+    assert mg["value_unit"] == "ppm"
+    # Same sparse-cadence defaults as Ca — Mg is also tested manually
+    assert mg["window_days"] == 90
+    assert mg["min_samples"] == 2
+
+
+def test_magnesium_param_label_and_unit():
+    """Mg advisor should produce 'Magnesium median X ppm' reason text."""
+    coord = _StubCoord({"advisor_magnesium_enabled": True})
+    cfg = param_advisor._build_config(coord, "magnesium", spec_eff=1.0)
+    assert cfg.param_label == "Magnesium"
+    assert cfg.value_unit == "ppm"
+
+
+# ---------------------------------------------------------------------------
+# Snowstorm guard — cross-Ca-alk safety check (added 0.5.2)
+# ---------------------------------------------------------------------------
+def _make_rec(*, current_dose=3.0, suggested_dose=3.5, reason="raise it"):
+    """Build a Recommendation that's recommending an INCREASE — what
+    the snowstorm guard targets."""
+    from reeftanktracker.advisor import Recommendation
+    return Recommendation(
+        state=suggested_dose,
+        current_dose_mL=current_dose,
+        suggested_dose_mL=suggested_dose,
+        change_mL=suggested_dose - current_dose,
+        change_pct=((suggested_dose - current_dose) / current_dose) * 100.0,
+        confidence="high",
+        reason=reason,
+        kh_median=415.0,
+        delta_dkh=10.0,
+        target_min=420.0,
+        target_max=440.0,
+        target_midpoint=430.0,
+        observed_slope_dkh_per_day=None,
+        observed_dose_median_mL=None,
+        spec_efficiency_dkh_per_mL=0.4706,
+        samples_used=4,
+        window_start=None,
+        window_end=None,
+        cooldown_until=None,
+        last_acknowledged_at=None,
+        last_acknowledged_value_mL=None,
+        last_demand_change_at=None,
+        last_demand_change_reason=None,
+        days_since_demand_change=None,
+        calibration_warning=False,
+        detected_supplement_label=None,
+        detected_supplement_profile=None,
+        spec_efficiency_source="default",
+        empirical_potency_dkh_per_mL=None,
+        empirical_to_spec_ratio=None,
+        empirical_potency_basis="not yet",
+        spec_drift_warning=False,
+        last_water_change_at=None,
+        last_water_change_percent=None,
+        days_since_water_change=None,
+        samples_excluded_for_wc=0,
+    )
+
+
+class _CoordWithSnapshots(_StubCoord):
+    """Stub that lets tests inject per-param snapshot values for
+    cross-parameter safety guards (snowstorm reads alk + Mg)."""
+    def __init__(self, options: dict, snapshots_by_param: dict[str, list]):
+        super().__init__(options)
+        self._snaps = snapshots_by_param
+
+    def advisor_snapshots(self, param_id: str) -> list[dict]:
+        return self._snaps.get(param_id, [])
+
+
+def test_snowstorm_guard_suppresses_ca_up_when_alk_high():
+    """Refuse to recommend RAISING Calcium when alk > 10 dKH —
+    snowstorm precipitation risk. Algorithm output overridden to
+    hold dose, reason explains why."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [{"at": "2026-05-08T08:00:00+00:00", "kh": 10.5,
+                    "dose_mL": 3.0}],
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1310,
+                           "dose_mL": None}],
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    assert out.suggested_dose_mL == 3.0  # held at current
+    assert out.change_mL == 0.0
+    assert out.confidence == "low"
+    assert "snowstorm" in out.reason.lower()
+    assert "alkalinity" in out.reason.lower()
+    assert "10.50" in out.reason or "10.5" in out.reason
+
+
+def test_snowstorm_guard_suppresses_ca_up_when_mg_low():
+    """Refuse to recommend RAISING Calcium when Mg < 1200 — low Mg
+    fails to inhibit Ca/alk precipitation."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [{"at": "2026-05-08T08:00:00+00:00", "kh": 8.6,
+                    "dose_mL": 3.0}],  # alk OK
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1150,
+                           "dose_mL": None}],  # Mg too low
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    assert out.suggested_dose_mL == 3.0
+    assert out.change_mL == 0.0
+    assert "snowstorm" in out.reason.lower()
+    assert "magnesium" in out.reason.lower()
+    assert "1150" in out.reason
+
+
+def test_snowstorm_guard_passes_through_when_chemistry_ok():
+    """When alk + Mg are both within safe ranges, guard is a no-op
+    and the original recommendation passes through unchanged."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [{"at": "2026-05-08T08:00:00+00:00", "kh": 8.7,
+                    "dose_mL": 3.0}],
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1320,
+                           "dose_mL": None}],
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5,
+                    reason="Calcium median 415 below band")
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    assert out.suggested_dose_mL == 3.5  # unchanged
+    assert out.change_mL == 0.5
+    assert "snowstorm" not in out.reason.lower()
+
+
+def test_snowstorm_guard_only_applies_to_calcium():
+    """The snowstorm guard is Ca-specific. Mg / KH / etc.
+    recommendations pass through unchanged."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [{"at": "2026-05-08T08:00:00+00:00", "kh": 11.0,
+                    "dose_mL": 3.0}],
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1100,
+                           "dose_mL": None}],
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
+    # Pass param_id="magnesium" — guard should pass through
+    out = param_advisor._apply_safety_guards(coord, "magnesium", rec)
+    assert out.suggested_dose_mL == 3.5  # unchanged
+
+
+def test_snowstorm_guard_only_blocks_increases():
+    """A recommendation to LOWER Ca dose passes through even when
+    chemistry is risky — lowering can't trigger snowstorm."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [{"at": "2026-05-08T08:00:00+00:00", "kh": 11.0,
+                    "dose_mL": 3.0}],  # high alk, would trigger guard
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1100,
+                           "dose_mL": None}],
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=2.5)  # decrease
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    assert out.suggested_dose_mL == 2.5  # unchanged — decrease passes
+
+
+def test_snowstorm_guard_passes_when_no_kh_snapshots():
+    """If there's no alk advisor data yet, guard can't evaluate the
+    alkalinity check — passes through (defensive: don't block on
+    insufficient data, just on confirmed-bad data)."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "kh": [],  # no alk data
+            "magnesium": [{"at": "2026-05-08T08:00:00+00:00", "kh": 1320,
+                           "dose_mL": None}],
+        },
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    assert out.suggested_dose_mL == 3.5  # passes through

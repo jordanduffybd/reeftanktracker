@@ -2,6 +2,72 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.2 — Magnesium advisor + per-element dashboard views + snowstorm guard + form-bounds widening
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Magnesium advisor
+
+`sensor.reef_tank_magnesium_advisor_recommendation` lands. Same shape as the Calcium advisor (sparse-cadence defaults, snapshot-on-record-reading, supplement profile filter). Defaults from research:
+
+| Setting | Mg | Notes |
+|---|---|---|
+| Target band | 1300–1350 ppm | SPS-friendly per Holmes-Farley; LPS tolerant down to 1200 |
+| Hysteresis | 20 ppm | Mg test kits read coarser than Ca (±20-30 ppm typical noise) |
+| Step cap | ±10% | Same as Ca/alk |
+| Cooldown | 30 days | Same as Ca (typical monthly testing cadence) |
+| Window | 90 days | Same as Ca (sparse-cadence) |
+| Foundation C potency | 1.0 ppm Mg / mL / 100L | Vendor label |
+
+### Per-element dashboard views (Calcium + Magnesium)
+
+The 0.5.0/0.5.1 Calcium advisor only exposed attributes; users had to build their own card. Now both Ca and Mg get dedicated dashboard views auto-installed:
+- **Conditional headline** — "⏸️ {Param} advisor paused" markdown banner when state is unknown/unavailable, regular tile when state is a real number
+- **Show your work** — markdown card with the same param-aware row macro as the alk advisor (only renders rows whose value is meaningful)
+- **Help card** — explains how to configure + add readings, links to Configure
+- **Activity log** — Logbook filtered to that advisor's sensor (4-week lookback for sparse-cadence params)
+
+Acknowledge / dismiss action buttons deferred to 0.5.3 along with the multi-supplement work where they become more nuanced.
+
+### Snowstorm guard (cross-Ca-alk safety)
+
+Calcium advisor refuses to recommend RAISING Ca dose when:
+- Latest alkalinity snapshot > 10 dKH (precipitation risk), OR
+- Latest magnesium snapshot < 1200 ppm (low-Mg fails to inhibit Ca/alk precipitation)
+
+Holmes-Farley + BRStv consensus: "fix Mg first, then alk + Ca settle." When the guard fires, the recommendation is overridden to hold dose, confidence drops to "low", and the reason text explains both the trigger AND the original advisor reasoning so the user can see what would have been recommended without the guard.
+
+The guard ONLY suppresses INCREASES — lowering Ca dose can never trigger snowstorm, so decrease recommendations always pass through. Mg / KH / etc. advisors are unaffected (the guard is Ca-specific).
+
+### Form-bounds widening
+
+The 0.5.1 sparse-cadence defaults (window=90, cooldown=30, correction=30) couldn't actually be saved — the per-element advisor form schema bounds were inherited from the alk advisor (max=30 days). Widened to year-scale ceilings:
+
+| Field | Old max | New max |
+|---|---|---|
+| `window_days` | 30 | 365 |
+| `min_samples` | 30 | 60 |
+| `min_trend_days` | 14 | 30 |
+| `cooldown_days` / `dismiss_cooldown_days` | 30 | 180 |
+| `min_samples_after_event` | 14 | 30 |
+| `correction_period_days` | 30 | 180 |
+
+Users on prod 0.5.1 who configured Ca advisor with window=30 (the max we could submit before this fix) can now resubmit with window=90 to match the new defaults.
+
+### Tests
+
+143 passing (was 135). +8 new in `tests/test_param_advisor.py`:
+- 2 magnesium defaults / param_label
+- 6 snowstorm guard (alk-high / Mg-low / both-OK / non-Ca passthrough / decrease passthrough / no-snapshots passthrough)
+
+### Migration
+
+After install:
+1. Restart integration → new Mg advisor sensor appears (unavailable until enabled)
+2. Configure → "Magnesium dosing advisor" → enable, pick Foundation C from supplement profile, set heads
+3. Optionally re-submit Calcium advisor form with `window_days=90` (now allowed; was capped at 30 in 0.5.1)
+4. Optionally register Foundation C with `eff_per_mL_per_100L: 1.0` for cleaner spec_efficiency_source label
+
 ## 0.5.1 — Calcium advisor UX polish (manual cadence + cold-start backfill + per-element potency)
 
 **Tested against:** HA Core `2026.4.4` (dev). Focused UX pass on the 0.5.0 Calcium advisor based on real-prod feedback. **Mg / NO3 / PO4 advisors deferred to 0.5.2** — Ca needed to be solid first.

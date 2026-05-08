@@ -381,14 +381,197 @@ def _eid(uid_map: dict[str, str], unique_id: str, fallback_domain: str = "sensor
 def build_dashboard_config(hass: HomeAssistant | None = None) -> dict[str, Any]:
     """Build the full Reef Tank dashboard config from the parameter list."""
     uid_map = _build_uid_to_eid(hass) if hass else {}
+    views = [
+        _build_test_session_view(uid_map),
+        _build_overview_view(uid_map),
+        _build_advisor_view(uid_map),
+    ]
+    # Per-element advisor views — one per param_id in PARAM_DEFAULTS.
+    # Currently calcium + magnesium (0.5.2). Nitrate + phosphate
+    # follow in 0.5.3 with multi-supplement-aware variants.
+    from . import param_advisor
+    for param_id in param_advisor.PARAM_DEFAULTS:
+        views.append(_build_param_advisor_view(uid_map, param_id))
+    views.extend([
+        _build_dosing_plan_view(uid_map),
+        _build_diagnostics_view(uid_map),
+    ])
     return {
         "title": "Reef Tank",
-        "views": [
-            _build_test_session_view(uid_map),
-            _build_overview_view(uid_map),
-            _build_advisor_view(uid_map),
-            _build_dosing_plan_view(uid_map),
-            _build_diagnostics_view(uid_map),
+        "views": views,
+    }
+
+
+def _build_param_advisor_view(
+    uid_map: dict[str, str], param_id: str,
+) -> dict[str, Any]:
+    """Per-element advisor view (Calcium / Magnesium today, NO3+PO4
+    in 0.5.3). Mirrors the alk advisor view's headline + show-your-work
+    surface but parameterised on the per-element advisor sensor.
+
+    Read-only for now — per-element ack/dismiss services don't exist
+    yet. Action buttons (acknowledge / dismiss) ship in 0.5.3 alongside
+    the multi-supplement work where they become more nuanced (which
+    primary supplement to adjust, etc.).
+    """
+    from . import param_advisor
+    advisor_eid = _eid(uid_map, f"reef_{param_id}_advisor_recommendation")
+    title = param_id.capitalize()
+    defaults = param_advisor.PARAM_DEFAULTS.get(param_id, {})
+    unit = defaults.get("value_unit", "ppm")
+
+    # Headline: same conditional-banner-or-tile as the alk advisor view.
+    headline_card = {
+        "type": "vertical-stack",
+        "cards": [
+            {
+                "type": "conditional",
+                "conditions": [
+                    {"condition": "state", "entity": advisor_eid,
+                     "state": ["unknown", "unavailable"]},
+                ],
+                "card": {
+                    "type": "markdown",
+                    "content": (
+                        "## ⏸️ " + title + " advisor paused\n\n"
+                        "{{ state_attr('" + advisor_eid + "', 'reason') "
+                        "or 'Advisor not yet enabled.' }}"
+                    ),
+                },
+            },
+            {
+                "type": "conditional",
+                "conditions": [
+                    {"condition": "state", "entity": advisor_eid,
+                     "state_not": "unknown"},
+                    {"condition": "state", "entity": advisor_eid,
+                     "state_not": "unavailable"},
+                ],
+                "card": {
+                    "type": "tile",
+                    "entity": advisor_eid,
+                    "name": f"Suggested daily dose ({title})",
+                    "icon": "mdi:test-tube",
+                    "vertical": True,
+                    "state_content": ["state", "last-changed"],
+                },
+            },
+        ],
+    }
+
+    # Show-your-work card — markdown so we can hide rows that are
+    # null when the advisor doesn't have data yet. Uses the same
+    # `kh_median` field name as alk (carryover for code reuse —
+    # the field stores whatever the parameter's value is).
+    attributes_card = {
+        "type": "markdown",
+        "content": (
+            "{% set ent = '" + advisor_eid + "' %}"
+            "{% set s = states(ent) %}"
+            "{% set known = s not in ('unknown','unavailable','none','') %}"
+            "### Show your work\n\n"
+            "{% if not known %}"
+            f"_Most computed values are unavailable while the {title} "
+            "advisor is paused — see banner above. The configured "
+            "target band and supplement spec are still listed below._\n\n"
+            "{% endif %}"
+            "| | |\n|---|---|\n"
+            f"| Target band | "
+            "{{ state_attr(ent, 'target_min') }} – "
+            "{{ state_attr(ent, 'target_max') }}"
+            f" {unit} |\n"
+            f"| Spec efficiency ({unit}/mL) | "
+            "{{ state_attr(ent, 'spec_efficiency_dkh_per_mL') or '—' }} |\n"
+            "| Spec efficiency source | "
+            "{{ state_attr(ent, 'spec_efficiency_source') or '—' }} |\n"
+            "| Confidence | "
+            "{{ state_attr(ent, 'confidence') or '—' }} |\n"
+            "| Reason | "
+            "{{ state_attr(ent, 'reason') or '—' }} |\n"
+            "{% macro row(label, attr, suffix='') -%}"
+            "{% set v = state_attr(ent, attr) %}"
+            "{% if v is not none and v not in ('unknown','unavailable') %}"
+            "| {{ label }} | {{ v }}{{ suffix }} |\n"
+            "{% endif %}"
+            "{%- endmacro %}"
+            f"{{{{ row('{title} median', 'kh_median', ' {unit}') }}}}"
+            "{{ row('Current dose (mL/day)', 'current_dose_mL') }}"
+            "{{ row('Suggested dose (mL/day)', 'suggested_dose_mL') }}"
+            "{{ row('Change (mL)', 'change_mL') }}"
+            "{{ row('Change (%)', 'change_pct') }}"
+            f"{{{{ row('Observed slope ({unit}/day)', 'observed_slope_dkh_per_day') }}}}"
+            "{{ row('Samples used', 'samples_used') }}"
+            "{{ row('Cooldown until', 'cooldown_until') }}"
+            "{{ row('Last demand change', 'last_demand_change_at') }}"
+            "{{ row('Days since demand change', 'days_since_demand_change') }}"
+            "{{ row('Last water change', 'last_water_change_at') }}"
+            "{{ row('Days since water change', 'days_since_water_change') }}"
+        ),
+    }
+
+    help_card = {
+        "type": "markdown",
+        "content": (
+            f"**Configure:** Settings → Devices → Reef Tank Tracker → "
+            f"Configure → \"{title} dosing advisor\".\n\n"
+            f"**Add a reading:** Test Session view → enter a "
+            f"{title} value. The advisor auto-captures a snapshot "
+            f"and recomputes.\n\n"
+            f"**Recommendation-only:** never writes to your doser. "
+            f"Apply changes in ReefBeat manually.\n\n"
+            f"**Defaults are tuned for sparse manual testing** "
+            f"(1-2 readings/month). If you have an auto-tester, shrink "
+            f"`window_days` and bump `min_samples` via the Configure form."
+        ),
+    }
+
+    # Activity log: filtered to this param's advisor sensor + the
+    # KH Keeper calibration entities (unchanged across params — the
+    # advisor surface is shared). Per-element ack/dismiss arrives in
+    # 0.5.3 along with multi-supplement work.
+    activity_log = {
+        "type": "logbook",
+        "title": f"Recent {title} activity",
+        "hours_to_show": 168 * 4,  # 4 weeks for sparse-cadence params
+        "entities": [advisor_eid],
+    }
+
+    return {
+        "title": f"{title} Advisor",
+        "path": f"{param_id}-advisor",
+        "icon": "mdi:test-tube",
+        "type": "sections",
+        "max_columns": 3,
+        "sections": [
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading",
+                     "heading": f"{title} dosing advisor",
+                     "icon": "mdi:test-tube"},
+                    headline_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [attributes_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [help_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Activity log",
+                     "icon": "mdi:history"},
+                    activity_log,
+                ],
+            },
         ],
     }
 

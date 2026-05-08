@@ -19,7 +19,8 @@
           "sources": "Auto-source sensors",
           "targets": "Target ranges",
           "advisor": "Alk dosing advisor",
-          "advisor_calcium": "Calcium dosing advisor"
+          "advisor_calcium": "Calcium dosing advisor",
+          "advisor_magnesium": "Magnesium dosing advisor"
         }
       },
       "sources": {
@@ -65,6 +66,36 @@
           "advisor_calcium_cooldown_days": "Default 30 days (one monthly testing cycle) — gives one full cycle to see the effect of a dose change before the advisor suggests another.",
           "advisor_calcium_step_cap_pct": "Default 10% — conservative across reef types. Holmes-Farley: never raise Ca more than 25 ppm/day equivalent.",
           "advisor_calcium_hysteresis": "Default 5 ppm — within typical test-kit noise (Salifert/Hanna ULR ±10–20 ppm). Catches real drifts without chasing kit jitter."
+        }
+      },
+      "advisor_magnesium": {
+        "title": "Magnesium dosing advisor",
+        "description": "Configure the Magnesium dosing recommendation engine. Recommendation-only — never writes to your doser. Mg is more forgiving than Ca/alk (50–100 ppm/day shifts barely register on corals) but Mg is what KEEPS Ca and alk stable — low Mg fails to inhibit CaCO3 precipitation. Holmes-Farley consensus: fix Mg first, then alk + Ca settle. Defaults are tuned for **sparse manual testing — 1 to 2 readings per month** (90-day window, min 2 readings, 30-day cooldown). Snapshots come from your manual Mg readings — record via the Test Session view; existing readings are auto-backfilled when the advisor first activates.",
+        "data": {
+          "advisor_magnesium_enabled": "Enable Magnesium advisor",
+          "advisor_magnesium_heads": "Magnesium dose head sensors",
+          "advisor_magnesium_supplement_profile": "Supplement profile",
+          "advisor_magnesium_spec_efficiency": "Spec efficiency (ppm Mg per mL per 100L)",
+          "advisor_magnesium_target_min": "Target band low (ppm)",
+          "advisor_magnesium_target_max": "Target band high (ppm)",
+          "advisor_magnesium_window_days": "Rolling window length (days)",
+          "advisor_magnesium_min_samples": "Minimum readings required to suggest",
+          "advisor_magnesium_min_trend_days": "Consecutive readings outside band before adjusting",
+          "advisor_magnesium_cooldown_days": "Cooldown after acknowledging a change (days)",
+          "advisor_magnesium_dismiss_cooldown_days": "Cooldown after dismissing a suggestion (days)",
+          "advisor_magnesium_step_cap_pct": "Max dose change per recommendation (%)",
+          "advisor_magnesium_hysteresis": "Hysteresis around target band (ppm)",
+          "advisor_magnesium_min_samples_after_event": "Required readings after demand change before resuming",
+          "advisor_magnesium_correction_period_days": "Spread the correction over (days)"
+        },
+        "data_description": {
+          "advisor_magnesium_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses Magnesium (e.g. `sensor.rsdose4_SERIAL_head_N_daily_dose`). NOT `_auto_dosed_today` (today's actual dose). Multiple heads are summed.",
+          "advisor_magnesium_supplement_profile": "Pick a Magnesium-targeting profile registered via `add_supplement_profile` (e.g. Red Sea Foundation C). Use 'Custom' to enter a manual potency below.",
+          "advisor_magnesium_spec_efficiency": "Vendor-published potency. Foundation C = 1 ppm Mg raise per mL per 100L tank volume. Used when 'Custom' is selected above, or as fallback for profiles without a stored potency.",
+          "advisor_magnesium_target_min": "SPS-friendly default 1300 ppm. Natural seawater ~1280; LPS tolerant down to 1200.",
+          "advisor_magnesium_target_max": "SPS-friendly default 1350 ppm.",
+          "advisor_magnesium_window_days": "How far back the algorithm looks. **Default 90 days** for sparse monthly testing.",
+          "advisor_magnesium_hysteresis": "Default 20 ppm — within typical Mg test-kit noise (kits read in coarser units than Ca, ±20-30 ppm common). Catches real drifts without chasing kit jitter."
         }
       }
     }

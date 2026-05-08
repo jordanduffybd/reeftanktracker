@@ -93,8 +93,10 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 "targets",
                 "advisor",
                 "advisor_calcium",
-                # 0.5.1+ will add: "advisor_magnesium", "advisor_nitrate",
-                # "advisor_phosphate" — same pattern, different param_id.
+                "advisor_magnesium",
+                # 0.5.3+ will add: "advisor_nitrate", "advisor_phosphate"
+                # — same pattern, different param_id, plus multi-supplement
+                # coordination + remover semantics.
             ],
         )
 
@@ -342,6 +344,14 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             user_input, param_id="calcium",
         )
 
+    async def async_step_advisor_magnesium(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Magnesium dosing advisor configuration. Same shape as Ca."""
+        return await self._render_param_advisor_step(
+            user_input, param_id="magnesium",
+        )
+
     async def _render_param_advisor_step(
         self, user_input: dict[str, Any] | None, *, param_id: str,
     ) -> FlowResult:
@@ -395,6 +405,16 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 "hysteresis": (0.0, 50.0, 0.5),
                 "spec_eff": (0.1, 50.0, 0.1),  # ppm/mL/100L; FA = 2.0
             },
+            "magnesium": {
+                # 1100-1500 spans every plausible reef Mg target
+                "target": (1100.0, 1500.0, 5.0),
+                # Mg test kits are coarser than Ca (±20-30 ppm),
+                # so the hysteresis bound goes up to 100.
+                "hysteresis": (0.0, 100.0, 1.0),
+                # Foundation C = 1.0 ppm Mg / mL / 100L; powder
+                # supplements at higher concentrations exist.
+                "spec_eff": (0.1, 50.0, 0.1),
+            },
         }
         bounds = SCHEMA_BOUNDS.get(param_id, {
             "target": (0.0, 1000.0, 0.1),
@@ -442,12 +462,18 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 mn=bounds["target"][0], mx=bounds["target"][1],
                 step=bounds["target"][2],
             ),
-            vol.Optional(_opt_key("window_days")): _num(mn=2, mx=30, step=1),
-            vol.Optional(_opt_key("min_samples")): _num(mn=2, mx=30, step=1),
-            vol.Optional(_opt_key("min_trend_days")): _num(mn=1, mx=14, step=1),
-            vol.Optional(_opt_key("cooldown_days")): _num(mn=0, mx=30, step=0.5),
+            # Widened bounds (0.5.2) — the per-element advisors use
+            # sparse-cadence defaults (window=90, cooldown=30,
+            # correction=30 for Ca/Mg). The original alk-advisor
+            # bounds (max=30) rejected those values. Bumped to
+            # year-scale ceilings so any plausible reef-care cadence
+            # fits.
+            vol.Optional(_opt_key("window_days")): _num(mn=2, mx=365, step=1),
+            vol.Optional(_opt_key("min_samples")): _num(mn=1, mx=60, step=1),
+            vol.Optional(_opt_key("min_trend_days")): _num(mn=1, mx=30, step=1),
+            vol.Optional(_opt_key("cooldown_days")): _num(mn=0, mx=180, step=0.5),
             vol.Optional(_opt_key("dismiss_cooldown_days")): _num(
-                mn=0, mx=30, step=0.5,
+                mn=0, mx=180, step=0.5,
             ),
             vol.Optional(_opt_key("step_cap_pct")): _num(mn=1, mx=100, step=1),
             vol.Optional(_opt_key("hysteresis")): _num(
@@ -455,10 +481,10 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 step=bounds["hysteresis"][2],
             ),
             vol.Optional(_opt_key("min_samples_after_event")): _num(
-                mn=1, mx=14, step=1,
+                mn=1, mx=30, step=1,
             ),
             vol.Optional(_opt_key("correction_period_days")): _num(
-                mn=1, mx=30, step=0.5,
+                mn=1, mx=180, step=0.5,
             ),
         }
 
