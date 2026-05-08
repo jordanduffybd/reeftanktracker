@@ -368,7 +368,48 @@ class ReefDataCoordinator:
         # timestamps state changes with wall-clock time.
         self._import_statistic(reading)
         async_dispatcher_send(self.hass, SIGNAL_READING_RECORDED, parameter)
+        # For parameters with a per-element advisor (Ca / Mg / NO3 / PO4 —
+        # see param_advisor.PARAM_DEFAULTS), each manual reading also
+        # captures an advisor snapshot. This is the equivalent of the alk
+        # advisor's daily 23:55 auto-snapshot path, but for parameters
+        # that have no auto-source sensor (until Mastertronic Essential
+        # arrives). Snapshots are param-keyed in storage so they don't
+        # collide with KH's auto-captured ones.
+        await self._maybe_snapshot_for_advisor(
+            parameter, value, reading.sample_taken_at,
+        )
         return reading
+
+    async def _maybe_snapshot_for_advisor(
+        self, parameter: str, value: float, sample_taken_at: str,
+    ) -> None:
+        """If `parameter` has a per-element advisor configured (i.e. is
+        listed in `param_advisor.PARAM_DEFAULTS`), record a snapshot
+        with the current dose summed across the configured heads.
+
+        Best-effort: failures don't propagate to the caller (a snapshot
+        write should never break a `record_reading` call). Lazy import
+        breaks the circular dependency between coordinator and
+        param_advisor.
+        """
+        try:
+            from . import param_advisor
+            if parameter not in param_advisor.PARAM_DEFAULTS:
+                return
+            heads_key = param_advisor.opt_key(parameter, "heads")
+            heads = list(self._advisor_config.get(heads_key) or [])
+            dose_mL = param_advisor._sum_dose_mL(self.hass, heads)
+            await self.async_record_advisor_snapshot(
+                parameter,
+                at=sample_taken_at,
+                kh=float(value),
+                dose_mL=dose_mL,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "Snapshot-on-reading failed for parameter=%r: %s",
+                parameter, exc,
+            )
 
     def _resolve_advisor_entity_id(self) -> str | None:
         """Find the actual entity_id for the alk advisor sensor in the

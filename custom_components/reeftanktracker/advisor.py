@@ -138,6 +138,16 @@ class AdvisorConfig:
     # Tank volume in litres (used to rescale spec efficiency to this tank).
     tank_volume_L: float = 425.0
 
+    # Display vocabulary for reason text + log messages. The algorithm
+    # is unit-agnostic; these labels just shape the user-facing strings.
+    # Defaults match the original alk advisor behaviour for back-compat
+    # — alk_advisor.py keeps using AdvisorConfig() without setting them.
+    # Per-element advisors (param_advisor.py) override these from
+    # `PARAM_DEFAULTS`. e.g. for calcium: param_label="Calcium",
+    # value_unit="ppm".
+    param_label: str = "KH"
+    value_unit: str = "dKH"
+
 
 @dataclass
 class Recommendation:
@@ -599,8 +609,8 @@ def compute_recommendation(
             state=None, suggested=None,
             confidence="insufficient",
             reason=(
-                "Alk doser daily-dose sensor is unreachable or zero "
-                "(check ReefBeat connectivity). Advisor will resume "
+                "Doser daily-dose sensor is unreachable or zero "
+                "(check ReefBeat / doser connectivity). Advisor will resume "
                 "automatically when the sensor returns."
             ),
         )
@@ -644,7 +654,7 @@ def compute_recommendation(
             ),
         )
 
-    # 4) Hysteresis — KH median inside the target band ± hysteresis = no action
+    # 4) Hysteresis — value median inside the target band ± hysteresis = no action
     band_low = cfg.target_min - cfg.hysteresis_dkh
     band_high = cfg.target_max + cfg.hysteresis_dkh
     assert kh_median is not None  # min_samples gate ensures this
@@ -658,7 +668,8 @@ def compute_recommendation(
             state=current_dose_mL, suggested=current_dose_mL,
             confidence=conf,
             reason=(
-                f"KH median {kh_median:.2f} dKH is within target band "
+                f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
+                f"is within target band "
                 f"{cfg.target_min}–{cfg.target_max} (±{cfg.hysteresis_dkh} "
                 f"hysteresis); holding current dose.{suffix}"
             ),
@@ -671,8 +682,9 @@ def compute_recommendation(
             state=current_dose_mL, suggested=current_dose_mL,
             confidence="medium",
             reason=(
-                f"KH median {kh_median:.2f} dKH outside target band, but "
-                f"only {trend_days} consecutive day(s) trending — "
+                f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
+                f"outside target band, but only {trend_days} "
+                f"consecutive day(s) trending — "
                 f"need {cfg.min_trend_days} before adjusting."
             ),
         )
@@ -704,15 +716,15 @@ def compute_recommendation(
     obs_note = ""
     if obs_slope is not None and obs_dose_median is not None:
         obs_note = (
-            f" Observed: KH slope {obs_slope:+.3f} dKH/day at "
-            f"{obs_dose_median:.2f} mL/day."
+            f" Observed: {cfg.param_label} slope {obs_slope:+.3f} "
+            f"{cfg.value_unit}/day at {obs_dose_median:.2f} mL/day."
         )
 
     reason = (
-        f"KH median {kh_median:.2f} dKH "
+        f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
         f"{'below' if delta_kh > 0 else 'above'} target midpoint "
         f"{midpoint:.2f} (delta {-delta_kh:+.2f}); spec potency "
-        f"{spec_eff:.4f} dKH/mL spread over "
+        f"{spec_eff:.4f} {cfg.value_unit}/mL spread over "
         f"{cfg.correction_period_days:.0f} days → "
         f"{capped_change_mL:+.2f} mL/day{capped_note}.{obs_note}{cal_note}"
     )
