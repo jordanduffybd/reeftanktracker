@@ -355,10 +355,43 @@ class AlkAdvisorSensor(SensorEntity):
                 self.hass, SIGNAL_ADVISOR_UPDATED, self._handle_update
             )
         )
+        # Also subscribe to state changes on the configured upstream
+        # sensors (alk heads + KH source + calibration warning). Without
+        # this, a transient ReefBeat outage can leave the advisor stuck
+        # on a stale `state=None` (because `_sum_dose_mL` returned None
+        # during the outage and SIGNAL_ADVISOR_UPDATED doesn't refire
+        # when the doser comes back). Tracking state changes lets the
+        # sensor recompute the moment upstream data returns.
+        from homeassistant.helpers.event import async_track_state_change_event
+        cfg = self._coordinator.get_advisor_config()
+        upstream: list[str] = []
+        upstream.extend(cfg.get(alk_advisor.OPT_ALK_HEADS) or [])
+        kh_src = cfg.get(alk_advisor.OPT_KH_SOURCE)
+        if kh_src:
+            upstream.append(kh_src)
+        cal_warn = cfg.get(alk_advisor.OPT_CALIBRATION_WARNING_ENTITY)
+        if cal_warn:
+            upstream.append(cal_warn)
+        if upstream:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, upstream, self._handle_upstream_change,
+                )
+            )
         self.async_write_ha_state()
 
     @callback
     def _handle_update(self, _param_id: str | None = None) -> None:
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_upstream_change(self, _event) -> None:
+        """An alk-head / KH source / calibration-warning sensor changed
+        state — recompute. This is what auto-recovers the advisor after
+        a ReefBeat outage: as soon as the doser sensor flips from
+        unavailable back to a number, we re-render with current_dose
+        populated and the user sees the "doser unreachable" reason
+        replaced by a real recommendation (or learning-mode message)."""
         self.async_write_ha_state()
 
     def _compute(self) -> Recommendation | None:

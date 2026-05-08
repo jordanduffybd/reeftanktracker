@@ -2,9 +2,20 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
-## 0.4.3 — Target ranges Options page + ICP debug-bundle parse trace
+## 0.4.3 — Target ranges Options page + ICP debug-bundle parse trace + alk advisor robustness
 
 **Tested against:** HA Core `2026.4.4` (dev).
+
+### Alk advisor robustness against transient ReefBeat outages
+
+Caught during the user's 2026-05-08 ReefBeat maintenance window: when the alk doser's `daily_dose` sensor went briefly unavailable during an integration reload, the advisor sensor returned `state=None` (rendered as "unknown" in HA) AND failed to auto-recover when the doser came back. Two fixes:
+
+- **Reorder advisor's exit branches.** `current_dose_mL` is now checked at the top of `compute_recommendation`. If the doser is unreachable, the user sees an actionable message ("Alk doser daily-dose sensor is unreachable or zero (check ReefBeat connectivity). Advisor will resume automatically when the sensor returns.") regardless of whether they're in learning mode, in-band, or trending. Previously a transient outage during learning mode would leave a stale "Learning mode after demand change..." reason while the actual cause was the doser sensor.
+- **Subscribe to upstream state changes.** `AlkAdvisorSensor.async_added_to_hass` now also subscribes to state-change events on the configured `alk_head` sensors, the `kh_source` sensor, and the `calibration_warning` binary sensor (in addition to the existing `SIGNAL_ADVISOR_UPDATED` dispatcher). Without this, the sensor stayed stuck on the stale `None` until something else (an ack/dismiss/snapshot) fired the dispatcher. Now the moment ReefBeat comes back, the advisor recomputes and shows the real recommendation.
+
+Regression test added covering the "current_dose=None during learning mode" scenario.
+
+
 
 ### Target ranges Options page
 

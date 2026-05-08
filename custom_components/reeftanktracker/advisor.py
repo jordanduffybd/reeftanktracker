@@ -589,6 +589,22 @@ def compute_recommendation(
     # ------------------------------------------------------------------
     # Exit paths
     # ------------------------------------------------------------------
+    # 0) Doser unreachable — short-circuit BEFORE any other branch so we
+    # always show the same actionable message regardless of where in the
+    # algorithm we'd otherwise land. Without this, a transient ReefBeat
+    # outage can make the advisor sensor go to "unknown" with a stale
+    # "learning mode" reason that doesn't tell the user the real cause.
+    if current_dose_mL is None or current_dose_mL <= 0:
+        return _build(
+            state=None, suggested=None,
+            confidence="insufficient",
+            reason=(
+                "Alk doser daily-dose sensor is unreachable or zero "
+                "(check ReefBeat connectivity). Advisor will resume "
+                "automatically when the sensor returns."
+            ),
+        )
+
     # 1) Demand-change learning mode (checked before insufficient-data
     # so a recent stocking change shows the right reason — the window
     # truncation will normally leave too few samples anyway).
@@ -661,18 +677,8 @@ def compute_recommendation(
             ),
         )
 
-    # 6) Need a current dose to compute a suggestion
-    if current_dose_mL is None or current_dose_mL <= 0:
-        return _build(
-            state=None, suggested=None,
-            confidence="insufficient",
-            reason=(
-                "Current alk daily dose is zero or unknown — "
-                "cannot compute a relative adjustment."
-            ),
-        )
-
-    # 7) Compute suggestion using spec potency, spread over correction_period_days
+    # 6) Compute suggestion using spec potency, spread over correction_period_days
+    # (current_dose check moved to the top — see branch 0).
     delta_kh = midpoint - kh_median
     raw_change_mL = delta_kh / (spec_eff * cfg.correction_period_days)
     cap = cfg.step_cap_pct / 100.0
