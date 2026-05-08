@@ -203,6 +203,12 @@ class Recommendation:
     last_water_change_percent: float | None = None
     days_since_water_change: float | None = None
     samples_excluded_for_wc: int = 0
+    # Redfield-ratio diagnostics — populated by the per-element advisor
+    # for nitrate + phosphate when both have snapshots. Mass ratio
+    # NO3:PO4. Outside [50, 200] sets `redfield_warning=True` and
+    # prepends a warning to `reason`.
+    redfield_ratio: float | None = None
+    redfield_warning: bool = False
 
     def as_attributes(self) -> dict[str, Any]:
         """Serialize for Home Assistant `extra_state_attributes`."""
@@ -245,6 +251,8 @@ class Recommendation:
             "last_water_change_percent": self.last_water_change_percent,
             "days_since_water_change": self.days_since_water_change,
             "samples_excluded_for_wc": self.samples_excluded_for_wc,
+            "redfield_ratio": self.redfield_ratio,
+            "redfield_warning": self.redfield_warning,
         }
 
 

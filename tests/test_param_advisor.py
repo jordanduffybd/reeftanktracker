@@ -417,3 +417,235 @@ def test_snowstorm_guard_passes_when_no_kh_snapshots():
     rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
     out = param_advisor._apply_safety_guards(coord, "calcium", rec)
     assert out.suggested_dose_mL == 3.5  # passes through
+
+
+# ---------------------------------------------------------------------------
+# 0.5.3 — NO3 + PO4 defaults
+# ---------------------------------------------------------------------------
+def test_nitrate_defaults_present():
+    """NO3 advisor defaults align with research: target 1-10 ppm,
+    NEGATIVE potency (remover semantics), 0.5 ppm floor."""
+    d = param_advisor.PARAM_DEFAULTS["nitrate"]
+    assert d["target_min"] == 1.0
+    assert d["target_max"] == 10.0
+    assert d["default_eff_per_mL_per_100L"] < 0  # remover
+    assert d["floor_value"] == 0.5
+    assert d["value_unit"] == "ppm"
+    # Sparse-cadence defaults match Ca/Mg
+    assert d["window_days"] == 90
+    assert d["min_samples"] == 2
+    assert d["cooldown_days"] == 30.0
+
+
+def test_phosphate_defaults_present():
+    """PO4 advisor defaults: 0.03-0.10 ppm, NEGATIVE potency,
+    0.03 ppm floor (below this triggers dinos)."""
+    d = param_advisor.PARAM_DEFAULTS["phosphate"]
+    assert d["target_min"] == 0.03
+    assert d["target_max"] == 0.10
+    assert d["default_eff_per_mL_per_100L"] < 0
+    assert d["floor_value"] == 0.03
+
+
+# ---------------------------------------------------------------------------
+# Floor guard (0.5.3) — refuses removal-dose increase when value is
+# at/below floor. Defensive against algorithm + user-override
+# combinations that would suggest "remove more" when nutrients are
+# already too low (dino-outbreak risk).
+# ---------------------------------------------------------------------------
+def _make_rec_for_remover(
+    *, current_dose=3.0, suggested_dose=3.5, median=0.3, reason="lower it",
+):
+    """Recommendation for a NO3/PO4 advisor: median is the latest
+    measured value (e.g. 0.3 ppm NO3 = below floor 0.5)."""
+    from reeftanktracker.advisor import Recommendation
+    return Recommendation(
+        state=suggested_dose,
+        current_dose_mL=current_dose,
+        suggested_dose_mL=suggested_dose,
+        change_mL=suggested_dose - current_dose,
+        change_pct=((suggested_dose - current_dose) / current_dose) * 100.0,
+        confidence="high",
+        reason=reason,
+        kh_median=median,
+        delta_dkh=0.0,
+        target_min=1.0,
+        target_max=10.0,
+        target_midpoint=5.5,
+        observed_slope_dkh_per_day=None,
+        observed_dose_median_mL=None,
+        spec_efficiency_dkh_per_mL=-0.118,
+        samples_used=4,
+        window_start=None,
+        window_end=None,
+        cooldown_until=None,
+        last_acknowledged_at=None,
+        last_acknowledged_value_mL=None,
+        last_demand_change_at=None,
+        last_demand_change_reason=None,
+        days_since_demand_change=None,
+        calibration_warning=False,
+        detected_supplement_label=None,
+        detected_supplement_profile=None,
+        spec_efficiency_source="default",
+        empirical_potency_dkh_per_mL=None,
+        empirical_to_spec_ratio=None,
+        empirical_potency_basis="not yet",
+        spec_drift_warning=False,
+        last_water_change_at=None,
+        last_water_change_percent=None,
+        days_since_water_change=None,
+        samples_excluded_for_wc=0,
+    )
+
+
+def test_floor_guard_suppresses_no3_increase_when_at_floor():
+    """NO3 = 0.3 ppm (below 0.5 floor) + algorithm wants more removal
+    → guard holds dose, drops confidence to low."""
+    coord = _CoordWithSnapshots({}, {})
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=3.5, median=0.3,
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.suggested_dose_mL == 3.0  # held
+    assert out.change_mL == 0.0
+    assert out.confidence == "low"
+    assert "floor" in out.reason.lower()
+    assert "0.30" in out.reason or "0.3" in out.reason
+
+
+def test_floor_guard_passes_when_above_floor():
+    """NO3 = 5.0 ppm (well above 0.5 floor) → guard is no-op,
+    original recommendation passes through."""
+    coord = _CoordWithSnapshots({}, {})
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=3.5, median=5.0,
+        reason="NO3 high — increase removal",
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.suggested_dose_mL == 3.5
+    assert out.change_mL == 0.5
+    assert "floor" not in out.reason.lower()
+
+
+def test_floor_guard_only_blocks_increases():
+    """Even at-floor, a recommendation to LOWER removal dose passes
+    through (lowering removal lets value recover — that's what we
+    WANT when at floor)."""
+    coord = _CoordWithSnapshots({}, {})
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=2.5,  # decrease
+        median=0.3,  # at floor
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.suggested_dose_mL == 2.5  # passes through
+
+
+def test_floor_guard_phosphate_at_floor():
+    """PO4 = 0.02 ppm (below 0.03 floor) → guard fires."""
+    coord = _CoordWithSnapshots({}, {})
+    rec = _make_rec_for_remover(
+        current_dose=2.0, suggested_dose=2.5, median=0.02,
+    )
+    out = param_advisor._apply_safety_guards(coord, "phosphate", rec)
+    assert out.suggested_dose_mL == 2.0
+    assert "floor" in out.reason.lower()
+
+
+def test_floor_guard_does_not_apply_to_calcium():
+    """Floor guard is for removers (NO3/PO4) only. Ca rec passes
+    through to the snowstorm guard, not the floor guard."""
+    coord = _CoordWithSnapshots(
+        {}, {"kh": [], "magnesium": []},  # no cross-param data
+    )
+    rec = _make_rec(current_dose=3.0, suggested_dose=3.5)
+    out = param_advisor._apply_safety_guards(coord, "calcium", rec)
+    # Ca with no cross-param data → snowstorm guard passes through;
+    # floor guard isn't even checked. Original rec returned.
+    assert out.suggested_dose_mL == 3.5
+
+
+# ---------------------------------------------------------------------------
+# Redfield-ratio warning (0.5.3) — soft warning, not a hard block.
+# Reads NO3 + PO4 medians, flags imbalance outside [50:1, 200:1].
+# ---------------------------------------------------------------------------
+def test_redfield_warning_fires_when_ratio_low():
+    """NO3:PO4 = 30:1 (PO4 too high relative to NO3) → cyano risk
+    warning prepended to reason."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            # 3 ppm NO3 / 0.10 ppm PO4 = 30:1 ratio (low)
+            "nitrate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 3.0,
+                         "dose_mL": 3.0}],
+            "phosphate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 0.10,
+                           "dose_mL": 1.0}],
+        },
+    )
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=2.5, median=3.0,
+        reason="NO3 in band — hold",
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.redfield_ratio is not None
+    assert 28 < out.redfield_ratio < 32  # ~30:1
+    assert out.redfield_warning is True
+    assert "redfield" in out.reason.lower()
+    assert "cyano" in out.reason.lower()
+
+
+def test_redfield_warning_fires_when_ratio_high():
+    """NO3:PO4 = 250:1 (NO3 too high relative to PO4) → dino risk."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            # 25 ppm NO3 / 0.10 ppm PO4 = 250:1 ratio (high)
+            "nitrate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 25.0,
+                         "dose_mL": 3.0}],
+            "phosphate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 0.10,
+                           "dose_mL": 1.0}],
+        },
+    )
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=3.5, median=25.0,
+        reason="NO3 high — remove more",
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.redfield_warning is True
+    assert "dino" in out.reason.lower()
+
+
+def test_redfield_in_band_no_warning():
+    """NO3:PO4 = 100:1 → no warning (canonical NSW ratio)."""
+    coord = _CoordWithSnapshots(
+        {},
+        {
+            "nitrate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 5.0,
+                         "dose_mL": 3.0}],
+            "phosphate": [{"at": "2026-05-08T08:00:00+00:00", "kh": 0.05,
+                           "dose_mL": 1.0}],
+        },
+    )
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=3.5, median=5.0,
+        reason="NO3 mid-band",
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    # Above floor → floor guard is a no-op; redfield in band → no
+    # prepended warning, but redfield_ratio is still set diagnostically
+    assert out.redfield_ratio is not None
+    assert 95 < out.redfield_ratio < 105  # ~100:1
+    assert out.redfield_warning is False
+    assert "redfield" not in out.reason.lower()
+
+
+def test_redfield_skipped_when_no_snapshots():
+    """No NO3 or PO4 snapshots yet → redfield is skipped, ratio stays
+    None, no warning. Floor guard still applies if relevant."""
+    coord = _CoordWithSnapshots({}, {})
+    rec = _make_rec_for_remover(
+        current_dose=3.0, suggested_dose=3.5, median=5.0,
+    )
+    out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
+    assert out.redfield_ratio is None
+    assert out.redfield_warning is False

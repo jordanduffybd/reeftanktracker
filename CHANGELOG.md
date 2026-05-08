@@ -2,6 +2,71 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.3 — Nitrate + Phosphate advisors with remover semantics, floor guard, and Redfield warning
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Nitrate + Phosphate advisors
+
+`sensor.reef_tank_nitrate_advisor_recommendation` and `sensor.reef_tank_phosphate_advisor_recommendation` land. Same `param_advisor` framework as Ca/Mg but with three new behaviours unique to nutrient REMOVERS:
+
+| Setting | NO3 | PO4 | Notes |
+|---|---|---|---|
+| Target band | 1–10 ppm | 0.03–0.10 ppm | Modern reef consensus; ULNS approach abandoned |
+| Hysteresis | 0.5 ppm | 0.01 ppm | Salifert NO3 / Hanna ULR PO4 precision |
+| Default potency | **−0.5** ppm/mL/100L | **−0.04** ppm/mL/100L | NEGATIVE — removers reduce the value |
+| Floor | 0.5 ppm | 0.03 ppm | Floor guard refuses removal-dose increase below floor |
+| Cooldown | 30 days | 30 days | Same sparse-cadence as Ca/Mg |
+| Window | 90 days | 90 days | Same sparse-cadence |
+
+The algorithm handles **signed efficiency** naturally: `delta / (signed_eff × correction_period)` produces signed `change_mL`. For removers, value above target → algorithm raises removal dose; value below target → algorithm lowers removal dose. No special-case branches required.
+
+### Floor guard
+
+When NO3 ≤ 0.5 ppm (or PO4 ≤ 0.03 ppm) the advisor refuses any further INCREASE in removal dose, regardless of what the algorithm computes. Stripping below these floors is the canonical dinoflagellate-outbreak setup per BRStv 52 Weeks of Reefing. Decreases (lowering removal dose to let value recover) always pass through.
+
+When the guard fires: confidence drops to "low", suggested dose held at current, reason text explains the floor + original reasoning.
+
+### Redfield-ratio warning
+
+Reads the latest NO3 + PO4 medians from snapshots and computes the mass ratio (NSW ~100:1). Outside [50:1, 200:1] sets `redfield_warning=true` and prepends a warning to the reason:
+
+- **Below 50:1** → PO4 too high relative to NO3 → cyanobacteria risk
+- **Above 200:1** → NO3 too high relative to PO4 → dinoflagellate risk
+
+This is a SOFT warning, not a hard guard. Algorithm still produces a recommendation; user decides whether to address the imbalance. Surfaces on both NO3 and PO4 advisor sensors as `redfield_ratio` and `redfield_warning` attributes, and shows up on the per-element dashboard "Show your work" cards.
+
+### Per-element dashboard views
+
+NO3 + PO4 dashboard views auto-generate from `param_advisor.PARAM_DEFAULTS` (same iteration as Ca/Mg). New rows on the "Show your work" cards for all per-element views (Ca, Mg, NO3, PO4):
+- `NO3:PO4 ratio` — Redfield mass ratio (only relevant for NO3 + PO4 cards in practice but rendered everywhere for diagnostic completeness)
+- `Redfield warning` — bool flag
+
+**Existing users on 0.5.2 must call `reeftanktracker.regenerate_dashboard` after upgrade to surface the new NO3 + PO4 views.** New installs get all 4 views automatically.
+
+### Multi-supplement coordination (lightweight)
+
+For 0.5.3, multi-supplement is handled by the existing pattern: configure ALL relevant doser heads (NPX + HR Nitrate Remover, both can be selected for the NO3 advisor) and the algorithm sums their daily doses for `current_dose_mL`. Recommendations target the TOTAL daily dose; user decides which physical head to adjust.
+
+A primary-supplement designation + automatic head-allocation logic is deferred — it would require modeling per-product potency individually, which the user hasn't requested. The current "sum heads" approach is simpler and matches how the alk advisor already works.
+
+### Form bounds for removers
+
+`spec_efficiency` schema bounds widened to allow NEGATIVE values for NO3/PO4:
+- NO3: `[-50.0, +50.0]` ppm/mL/100L (signed; positive only relevant for ULNS-recovery NO3 dosing)
+- PO4: `[-10.0, +10.0]` ppm/mL/100L
+
+### Tests
+
+`tests/test_param_advisor.py` adds 6 new tests for the floor guard, Redfield warning, and signed-eff math. Total advisor test count: ~22 (was 17 in 0.5.2).
+
+### Deferred to 0.5.4+
+
+- HR → LR Nitrate Remover switch suggestion when NO3 is sustained ≤ 15 ppm for 7+ days under HR potency
+- Carbon-dose variability flag (lower confidence when supplement is bacterial-population-dependent)
+- Per-element acknowledge / dismiss services
+- Empirical-vs-spec efficiency tracking for per-element advisors (alk only for now)
+
 ## 0.5.2 — Magnesium advisor + per-element dashboard views + snowstorm guard + form-bounds widening
 
 **Tested against:** HA Core `2026.4.4` (dev).
