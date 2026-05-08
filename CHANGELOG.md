@@ -2,6 +2,30 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.4.4 — supplement profiles get `param_id` (foundation for per-element advisors)
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+Foundation work for the per-element advisors (Ca, Mg, NO3, PO4) coming in 0.5.0. No user-visible feature change in this release on its own, but unblocks the per-element work cleanly.
+
+### What changed
+
+- **`add_supplement_profile` service** now accepts an optional `param_id` field (defaults to `"kh"` for back-compat). Pass a single string for single-target supplements OR a list (`["nitrate", "phosphate"]`) for **multi-target** supplements like Red Sea NO3:PO4-X that affect multiple parameters simultaneously.
+- **`eff_dkh_per_mL_per_100L`** is now optional when `param_id` doesn't include `"kh"` (it has no meaning for ppm-based or remover supplements). When `"kh"` is included, the field remains required — the alk advisor needs a real potency to compute dose changes.
+- **Coordinator** stores `param_id` always as a list internally (string input is normalized to a 1-element list). New `supplement_profiles_for(param_id)` helper checks list membership, so multi-target supplements surface in EACH per-element advisor whose parameter they affect.
+- **Alk advisor's dropdown** filters to KH-targeting profiles. Non-KH supplements (e.g. Foundation A/C, NPX, the Quantum AR/LR/HR products) no longer appear in the alk Options dropdown — they'll surface in their own per-element advisor when 0.5.0 lands. Profiles claiming `"kh"` without a real `eff_dkh_per_mL_per_100L` are also excluded (defensive; partial coverage on a multi-target).
+- **Auto-detect label patterns** are also filtered to KH-targeting so a phosphate / nitrate supplement label can't accidentally match against the alk doser's `_supplement` state.
+- **`list_supplement_profiles`** service now groups output by `param_id` for clear at-a-glance debugging. Multi-target supplements appear in each of their target groups with an `also_targets=[...]` annotation showing the cross-param wiring. Builtin sentinels (`auto`, `custom`) are correctly tagged "(sentinel — no fixed potency)" instead of misleadingly tagged "non-KH supplement".
+
+### Migration
+
+- Profiles created before 0.4.4 (no `param_id` field on disk) are treated as `"kh"` everywhere — no manual migration needed.
+- The 3 Quantum Aqua products registered in 0.4.3 (AR Phosphate / LR Nitrate / HR Nitrate) currently default to `"kh"` since they were registered before this release. They should be re-registered with proper `param_id` (`"phosphate"` / `"nitrate"` / `"nitrate"`) after 0.4.4 installs — call `remove_supplement_profile` then `add_supplement_profile` with the correct `param_id`.
+
+### Tests
+
+126 passing (was 117). Adds 6 coordinator tests (`param_id` defaults / accepts non-KH without eff / filters / legacy back-compat / multi-target appears in each / string normalizes to list) and 3 advisor tests (`all_profiles` excludes non-KH / excludes KH-targeting without eff / `all_label_patterns` excludes non-KH).
+
 ## 0.4.3 — Target ranges Options page + ICP debug-bundle parse trace + alk advisor robustness
 
 **Tested against:** HA Core `2026.4.4` (dev).
