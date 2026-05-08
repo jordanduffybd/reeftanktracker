@@ -712,6 +712,28 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
         ),
     }
 
+    # Event log card. The integration fires `logbook_entry` events
+    # tagged to the advisor sensor's entity_id for every user action
+    # (acknowledge, dismiss, water change, demand change, manual
+    # snapshot). Tracking the advisor sensor catches them all.
+    #
+    # KH Keeper calibration is external (kh-keeper-bridge MQTT-
+    # discovered), so we add the calibrate input + adjustment sensor
+    # explicitly. State changes on `number.kh_keeper_calibrate_kh_from_
+    # drop_test` and `sensor.kh_keeper_kh_adjustment` show up as
+    # standard state-change logbook entries.
+    log_entities = [
+        advisor_eid,
+        "number.kh_keeper_calibrate_kh_from_drop_test",
+        "sensor.kh_keeper_kh_adjustment",
+    ]
+    event_log_card = {
+        "type": "logbook",
+        "title": "Recent activity",
+        "hours_to_show": 168,  # 7 days
+        "entities": log_entities,
+    }
+
     return {
         "title": "Alk Advisor",
         "path": "alk-advisor",
@@ -760,6 +782,15 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                 "type": "grid",
                 "column_span": 1,
                 "cards": [help_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Activity log",
+                     "icon": "mdi:history"},
+                    event_log_card,
+                ],
             },
         ],
     }
