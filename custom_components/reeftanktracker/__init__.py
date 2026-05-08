@@ -136,12 +136,24 @@ def _validate_supplement_profile(value: dict[str, Any]) -> dict[str, Any]:
     optional — those parameters use different units and the per-element
     advisors arriving in 0.5.0 will introduce a parameter-aware
     potency field. For now these profiles just carry label + notes and
-    serve as a registry the user can reference."""
-    param_id = value.get("param_id", "kh")
-    if param_id == "kh" and value.get("eff_dkh_per_mL_per_100L") is None:
+    serve as a registry the user can reference.
+
+    Also normalizes `param_id` to a list (string input → 1-element list)
+    so multi-target supplements like Red Sea NO3:PO4-X (which targets
+    BOTH nitrate AND phosphate) can be registered as
+    `param_id=["nitrate", "phosphate"]` and surface in BOTH per-element
+    advisors. Internally the storage always holds a list; the singular
+    form is just user-facing sugar.
+    """
+    pid = value.get("param_id", "kh")
+    pids = [pid] if isinstance(pid, str) else list(pid)
+    if not pids:
+        raise vol.Invalid("param_id must be a non-empty string or list")
+    value["param_id"] = pids
+    if "kh" in pids and value.get("eff_dkh_per_mL_per_100L") is None:
         raise vol.Invalid(
-            "eff_dkh_per_mL_per_100L is required for KH (alkalinity) "
-            "supplements — the alk advisor uses it to compute dose changes."
+            "eff_dkh_per_mL_per_100L is required when param_id includes "
+            "'kh' — the alk advisor uses it to compute dose changes."
         )
     return value
 
@@ -149,20 +161,25 @@ def _validate_supplement_profile(value: dict[str, Any]) -> dict[str, Any]:
 ADD_SUPPLEMENT_PROFILE_SCHEMA = vol.All(
     vol.Schema({
         vol.Required("label"): cv.string,
-        # Required-for-KH, optional-for-others — see _validate_supplement_profile.
-        # The vol.Any wrapper is what lets None / absent through; the
-        # post-schema validator enforces presence for KH profiles.
+        # Required-when-targeting-KH, optional-otherwise — see
+        # _validate_supplement_profile. The vol.Any wrapper lets
+        # None / absent through; the post-schema validator enforces
+        # presence when "kh" is in param_id.
         vol.Optional("eff_dkh_per_mL_per_100L"): vol.Any(
             None,
             vol.All(vol.Coerce(float), vol.Range(min=0.001, max=5.0)),
         ),
-        # Which parameter this supplement targets. Default "kh" preserves
-        # back-compat — every existing profile (registered before this
-        # field existed) continues to be treated as a KH supplement, and
-        # the alk advisor's dropdown filters to param_id="kh".
-        # 0.5.0+ will add per-element advisors that filter to their own
-        # param_id (e.g. the Ca advisor reads param_id="calcium" supplements).
-        vol.Optional("param_id", default="kh"): cv.string,
+        # Which parameter(s) this supplement targets. Accepts either
+        # a single string ("kh") or a list (["nitrate", "phosphate"]
+        # for NO3:PO4-X-style multi-target supplements). Default "kh"
+        # preserves back-compat — every profile created before this
+        # field existed reads as a KH supplement, and the alk advisor's
+        # dropdown filters to KH-targeting profiles. Per-element
+        # advisors (0.5.0+) filter to their own param_id and a
+        # multi-target profile surfaces in each one.
+        vol.Optional("param_id", default="kh"): vol.Any(
+            cv.string, vol.All(cv.ensure_list, [cv.string]),
+        ),
         vol.Optional("label_patterns", default=[]): vol.All(
             cv.ensure_list, [cv.string],
         ),
@@ -479,31 +496,48 @@ async def _async_register_services(
         # Group BOTH builtin (always KH) + user profiles by param_id so
         # the user can see the full registry at a glance — useful when
         # debugging "why doesn't the alk advisor see my new supplement"
-        # (answer: param_id != "kh").
+        # (answer: param_id != "kh"). Multi-target user profiles
+        # (e.g. NO3:PO4-X with param_id=["nitrate","phosphate"]) appear
+        # in EACH of their target groups so per-element coverage is
+        # visually obvious.
         by_param: dict[str, list[tuple[str, str, dict]]] = {}
         for pid, prof in BUILTIN_PROFILES.items():
             by_param.setdefault("kh", []).append(("BUILTIN", pid, prof))
         for u in coordinator.supplement_profiles:
-            param_id = u.get("param_id", "kh")
-            by_param.setdefault(param_id, []).append(("USER", u["id"], u))
+            stored = u.get("param_id", "kh")
+            target_pids = [stored] if isinstance(stored, str) else list(stored)
+            for tp in target_pids:
+                by_param.setdefault(tp, []).append(("USER", u["id"], u))
 
         lines = [
             "Supplement profiles (BUILTIN unless tagged USER), grouped by param_id:",
         ]
+        # Builtin sentinels (auto, custom) have eff=None by design
+        # — they're not "non-KH supplements", just sentinels. Don't
+        # mislabel them.
+        SENTINELS = {"auto", "custom"}
         for param_id in sorted(by_param):
             lines.append(f"\n  [{param_id}]")
             for tag, pid, prof in by_param[param_id]:
                 eff = prof.get("eff_dkh_per_mL_per_100L")
-                eff_s = (
-                    f"{eff} dKH/mL/100L"
-                    if eff is not None and param_id == "kh"
-                    else "(n/a — non-KH supplement)"
-                )
+                if pid in SENTINELS:
+                    eff_s = "(sentinel — no fixed potency)"
+                elif eff is not None and param_id == "kh":
+                    eff_s = f"{eff} dKH/mL/100L"
+                else:
+                    eff_s = "(n/a — non-KH supplement)"
                 line = f"    [{tag}] {pid} — {prof['label']} — {eff_s}"
                 if tag == "USER":
                     pats = prof.get("label_patterns") or []
                     if pats:
                         line += f"  patterns={pats}"
+                    # If multi-target, note the other params it also
+                    # covers so the user sees the cross-param wiring.
+                    stored = prof.get("param_id", "kh")
+                    targets = [stored] if isinstance(stored, str) else list(stored)
+                    others = [t for t in targets if t != param_id]
+                    if others:
+                        line += f"  also_targets={others}"
                     if prof.get("notes"):
                         line += f"  notes={prof['notes']!r}"
                 lines.append(line)

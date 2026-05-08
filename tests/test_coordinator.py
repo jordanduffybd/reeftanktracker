@@ -467,7 +467,8 @@ async def test_supplement_profile_defaults_to_kh_param_id(hass):
         label="Plain Alk Supplement",
         eff_dkh_per_mL_per_100L=0.1,
     )
-    assert entry["param_id"] == "kh"
+    # Always stored as a list internally — string input → 1-element list.
+    assert entry["param_id"] == ["kh"]
 
 
 @pytest.mark.asyncio
@@ -483,7 +484,7 @@ async def test_supplement_profile_accepts_non_kh_param_id(hass):
         param_id="phosphate",
         notes="lanthanum-based, dose by PO4 level",
     )
-    assert entry["param_id"] == "phosphate"
+    assert entry["param_id"] == ["phosphate"]
     assert entry["eff_dkh_per_mL_per_100L"] is None
 
 
@@ -518,6 +519,50 @@ async def test_supplement_profiles_for_filters_by_param_id(hass):
     assert len(po4) == 1
     assert len(no3) == 2
     assert ca == []  # no calcium supplements registered
+
+
+@pytest.mark.asyncio
+async def test_supplement_profiles_for_multi_target_appears_in_each(hass):
+    """Multi-target supplements (e.g. Red Sea NO3:PO4-X with
+    param_id=["nitrate","phosphate"]) must surface in BOTH the
+    nitrate AND phosphate per-element advisors. Without this, the
+    user has to register the same supplement twice — error-prone
+    and creates duplicate dose tracking."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    npx = await coord.async_add_supplement_profile(
+        label="Red Sea NO3:PO4-X",
+        param_id=["nitrate", "phosphate"],
+        notes="targets both NO3 and PO4 simultaneously",
+    )
+    assert npx["param_id"] == ["nitrate", "phosphate"]
+    assert npx["eff_dkh_per_mL_per_100L"] is None
+
+    # Surfaces in BOTH per-element queries
+    no3_supps = coord.supplement_profiles_for("nitrate")
+    po4_supps = coord.supplement_profiles_for("phosphate")
+    kh_supps = coord.supplement_profiles_for("kh")
+
+    assert len(no3_supps) == 1 and no3_supps[0]["id"] == npx["id"]
+    assert len(po4_supps) == 1 and po4_supps[0]["id"] == npx["id"]
+    assert kh_supps == []  # multi-target NO3+PO4 doesn't pollute alk advisor
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_string_param_id_normalizes_to_list(hass):
+    """The user can pass a single string (the common case) and we
+    normalize to a list internally — so the storage shape is always
+    consistent and `supplement_profiles_for` doesn't need two
+    code paths."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    entry = await coord.async_add_supplement_profile(
+        label="Quantum AR Phosphate Remover",
+        param_id="phosphate",  # passed as string
+    )
+    assert entry["param_id"] == ["phosphate"]  # stored as list
 
 
 @pytest.mark.asyncio

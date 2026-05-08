@@ -349,16 +349,21 @@ add_supplement_profile:
       selector:
         text:
     param_id:
-      name: Target parameter
+      name: Target parameter(s)
       description: >
-        Which parameter this supplement affects. Defaults to "kh"
-        (alkalinity) so existing alk supplements keep working
-        unchanged. Use "calcium", "magnesium", "nitrate", "phosphate"
-        for non-alk supplements.
-      example: "kh"
+        Which parameter this supplement affects. Pass a single string
+        (e.g. "kh") for single-target supplements, OR a list (e.g.
+        ["nitrate", "phosphate"]) for multi-target supplements like
+        Red Sea NO3:PO4-X. Default "kh" preserves back-compat with
+        existing alk supplements. Use "calcium", "magnesium",
+        "nitrate", "phosphate" for the per-element advisors arriving
+        in 0.5.0.
+      example: "phosphate"
       default: "kh"
       selector:
         select:
+          multiple: true
+          custom_value: true
           options:
             - kh
             - calcium

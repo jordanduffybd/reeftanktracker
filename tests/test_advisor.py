@@ -796,6 +796,33 @@ def test_all_profiles_excludes_non_kh_supplements():
     assert "quantum_hr_nitrate" not in merged
 
 
+def test_all_profiles_excludes_kh_targeting_without_eff():
+    """A multi-target profile that includes "kh" but doesn't have
+    a real `eff_dkh_per_mL_per_100L` (e.g. someone registered
+    `param_id=["kh","calcium"]` but only filled in the calcium
+    side of the form) must NOT appear in the alk dropdown — without
+    a potency the alk advisor can't compute dose changes, so showing
+    it would just confuse the user.
+
+    The non-multi case (kh with no eff) is rejected by the schema
+    validator, but the schema can't see the "multi-target with
+    partial coverage" case — that's caught here in the read path."""
+    coord = _StubCoord({}, profiles=[
+        {
+            "id": "weird_multi_no_eff",
+            "label": "Weird multi-target no eff",
+            "eff_dkh_per_mL_per_100L": None,
+            "param_id": ["kh", "calcium"],
+            "label_patterns": [],
+        },
+    ])
+    merged = alk_advisor.all_profiles(coord)
+    # Built-ins are still there
+    assert "auto" in merged
+    # The user profile is filtered out (no real KH potency)
+    assert "weird_multi_no_eff" not in merged
+
+
 def test_all_label_patterns_excludes_non_kh_patterns():
     """Auto-detect on the alk doser's _supplement state must not
     match a phosphate / nitrate supplement's pattern even if the

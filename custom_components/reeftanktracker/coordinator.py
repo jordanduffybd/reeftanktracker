@@ -790,7 +790,7 @@ class ReefDataCoordinator:
 
     async def async_add_supplement_profile(
         self, *, label: str, eff_dkh_per_mL_per_100L: float | None = None,
-        param_id: str = "kh",
+        param_id: str | list[str] = "kh",
         label_patterns: list[str] | None = None, notes: str | None = None,
     ) -> dict[str, Any]:
         # Lazy import keeps coordinator import-time light and avoids a
@@ -798,6 +798,16 @@ class ReefDataCoordinator:
         from .alk_advisor import BUILTIN_PROFILES
         existing = self.supplement_profiles
         taken = set(BUILTIN_PROFILES) | {p["id"] for p in existing}
+        # Always store param_id as a list internally — caller can pass
+        # a string for single-target supplements (the common case) or
+        # a list for multi-target supplements like Red Sea NO3:PO4-X
+        # which targets nitrate AND phosphate simultaneously. The
+        # `supplement_profiles_for(param_id)` helper checks membership
+        # so a multi-target supplement surfaces in every per-element
+        # advisor whose parameter it affects.
+        pids = [param_id] if isinstance(param_id, str) else list(param_id)
+        if not pids:
+            pids = ["kh"]
         entry: dict[str, Any] = {
             "id": _unique_slug(label, taken),
             "label": label,
@@ -809,34 +819,42 @@ class ReefDataCoordinator:
                 float(eff_dkh_per_mL_per_100L)
                 if eff_dkh_per_mL_per_100L is not None else None
             ),
-            "param_id": param_id or "kh",
+            "param_id": pids,
             "label_patterns": [p.lower() for p in (label_patterns or [])],
             "created_at": _now_iso(),
             "notes": notes,
         }
         existing.append(entry)
         await self.async_save()
-        # Dispatch on the profile's actual target parameter — this lets
-        # per-element advisors (0.5.0+) listen for their own profile
-        # changes without recomputing on every alk profile add. The alk
-        # advisor still gets recomputed on param_id="kh" adds.
-        async_dispatcher_send(
-            self.hass, SIGNAL_ADVISOR_UPDATED, entry["param_id"],
-        )
+        # Dispatch on each target parameter so per-element advisors
+        # (0.5.0+) only recompute when their own supplements change.
+        # Single-target adds fire one dispatch; multi-target fires once
+        # per param.
+        for pid in pids:
+            async_dispatcher_send(
+                self.hass, SIGNAL_ADVISOR_UPDATED, pid,
+            )
         return entry
 
     def supplement_profiles_for(self, param_id: str) -> list[dict[str, Any]]:
-        """Return user-added supplement profiles targeting `param_id`.
+        """Return user-added supplement profiles that include `param_id`
+        in their target parameter list.
 
         Profiles registered before the param_id field existed default
-        to "kh" so existing alk supplements keep working unchanged.
-        Per-element advisors (0.5.0+) call this with their own param_id
-        to find supplements that target their parameter.
+        to "kh". Profiles registered with a single string (the common
+        case) match if the string equals `param_id`. Multi-target
+        profiles like Red Sea NO3:PO4-X (registered with
+        param_id=["nitrate", "phosphate"]) match if `param_id` is in
+        the list — they surface in BOTH the nitrate and phosphate
+        per-element advisors (0.5.0+).
         """
-        return [
-            p for p in self.supplement_profiles
-            if p.get("param_id", "kh") == param_id
-        ]
+        out: list[dict[str, Any]] = []
+        for p in self.supplement_profiles:
+            stored = p.get("param_id", "kh")
+            pids = [stored] if isinstance(stored, str) else list(stored)
+            if param_id in pids:
+                out.append(p)
+        return out
 
     async def async_remove_supplement_profile(self, profile_id: str) -> None:
         existing = self.supplement_profiles
