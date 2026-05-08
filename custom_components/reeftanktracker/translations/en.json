@@ -17,12 +17,17 @@
         "description": "Pick a section to edit.",
         "menu_options": {
           "sources": "Auto-source sensors",
+          "targets": "Target ranges",
           "advisor": "Alk dosing advisor"
         }
       },
       "sources": {
         "title": "Auto-source sensors",
         "description": "For each parameter, optionally pick a sensor whose value will be used as the 'latest' fallback when no manual reading is fresh. Defaults are pre-filled where we know about them (e.g. KH Keeper, ATO probe). Leave a row empty for manual / ICP-only parameters."
+      },
+      "targets": {
+        "title": "Target ranges",
+        "description": "Per-parameter target band (min / max) for your tank. Defaults are pre-filled from the integration's built-in values; override here if your reef runs to different numbers (e.g. SPS-low vs. mixed-reef-high). Empty fields fall back to the default. Surfaced as `target_min` / `target_max` / `in_target_band` attributes on each parameter's `_latest` sensor."
       },
       "advisor": {
         "title": "Alk dosing advisor",

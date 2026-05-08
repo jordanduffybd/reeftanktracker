@@ -367,3 +367,85 @@ async def test_water_change_round_trip(hass):
     assert wcs[0]["percent"] == 10.0
     assert wcs[0]["salt_mix_kh"] == 8.0
     assert wcs[0]["notes"] == "Red Sea Coral Pro"
+
+
+# ---------------------------------------------------------------------------
+# Target-range overrides (Options-flow "Target ranges" page)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_target_range_falls_back_to_parameters_default(hass):
+    """No override set → returns the static default from parameters.py.
+    Without this fallback, every newly-installed integration would
+    return (None, None) for every parameter until the user opened the
+    Options page, breaking dashboard tile-color hints + automations."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    coord.set_advisor_config({})
+
+    lo, hi = coord.get_target_range("kh")
+    assert lo == 8.5
+    assert hi == 8.9
+
+
+@pytest.mark.asyncio
+async def test_target_range_user_override_wins(hass):
+    """An override in entry.options (forwarded into _advisor_config)
+    must replace BOTH min and max — partial overrides fall back to the
+    defaults so we don't end up with one custom value paired with a
+    stale default."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    coord.set_advisor_config({
+        "target_kh_min": 8.0,
+        "target_kh_max": 9.5,
+    })
+
+    lo, hi = coord.get_target_range("kh")
+    assert lo == 8.0
+    assert hi == 9.5
+
+
+@pytest.mark.asyncio
+async def test_target_range_partial_override_falls_back(hass):
+    """Only `target_kh_min` set, not max → fall back to BOTH defaults
+    rather than mixing override-min with default-max. Prevents the
+    user from accidentally creating an inverted band (override-min
+    above default-max)."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    coord.set_advisor_config({"target_kh_min": 8.0})
+
+    lo, hi = coord.get_target_range("kh")
+    # Both fall back to the parameters.py defaults
+    assert lo == 8.5
+    assert hi == 8.9
+
+
+@pytest.mark.asyncio
+async def test_target_range_unknown_param_returns_none(hass):
+    """A param_id not in parameters.py → (None, None), not a crash.
+    Defends against typos in entry.options or future parameter renames."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    coord.set_advisor_config({})
+
+    lo, hi = coord.get_target_range("not_a_real_param")
+    assert lo is None
+    assert hi is None
+
+
+@pytest.mark.asyncio
+async def test_target_range_invalid_override_falls_back(hass):
+    """Garbage in entry.options (e.g. someone hand-edited the
+    .storage file with a string) → fall back to defaults rather than
+    crash on float() conversion."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    coord.set_advisor_config({
+        "target_kh_min": "not a number",
+        "target_kh_max": "also not a number",
+    })
+
+    lo, hi = coord.get_target_range("kh")
+    assert lo == 8.5  # fell back to default
+    assert hi == 8.9

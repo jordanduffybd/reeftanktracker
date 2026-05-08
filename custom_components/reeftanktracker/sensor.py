@@ -172,20 +172,43 @@ class ReefLatestSensor(_ReefSensorBase):
     def extra_state_attributes(self) -> dict[str, Any]:
         latest = self._coordinator.latest_reading(self._param["id"])
         auto_src = self._coordinator.get_auto_source(self._param["id"])
-        if not latest:
-            return {
-                "source": "auto" if auto_src else None,
-                "auto_source_entity": auto_src,
-            }
-        return {
-            "source": latest["source"],
-            "method": latest.get("method"),
-            "sample_taken_at": latest["sample_taken_at"],
-            "recorded_at": latest["recorded_at"],
-            "test_id": latest.get("test_id"),
-            "notes": latest.get("notes"),
+        # Effective target range (user override from Options-flow
+        # "Target ranges" page wins over the static default in
+        # parameters.py). Surfaced as attributes on every latest
+        # sensor so dashboards and automations can reason about
+        # in/out-of-band without hardcoding numbers.
+        target_min, target_max = self._coordinator.get_target_range(
+            self._param["id"]
+        )
+        attrs: dict[str, Any] = {
             "auto_source_entity": auto_src,
+            "target_min": target_min,
+            "target_max": target_max,
         }
+        if not latest:
+            attrs["source"] = "auto" if auto_src else None
+        else:
+            attrs.update({
+                "source": latest["source"],
+                "method": latest.get("method"),
+                "sample_taken_at": latest["sample_taken_at"],
+                "recorded_at": latest["recorded_at"],
+                "test_id": latest.get("test_id"),
+                "notes": latest.get("notes"),
+            })
+        # Compute in_target_band only when both the value AND the band
+        # are known. None propagates so consumers can distinguish
+        # "no target set" from "out of target".
+        value = self.native_value
+        if (
+            value is not None
+            and target_min is not None
+            and target_max is not None
+        ):
+            attrs["in_target_band"] = bool(target_min <= value <= target_max)
+        else:
+            attrs["in_target_band"] = None
+        return attrs
 
 
 class ReefLatestMethodSensor(_ReefSensorBase):

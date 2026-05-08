@@ -523,13 +523,60 @@ def parse_triton_showroom(html: str) -> ParsedReport:
 # ---------------------------------------------------------------------------
 # Debug bundle — dropped on parser failure
 # ---------------------------------------------------------------------------
+def _build_parse_trace(html: str) -> str:
+    """Best-effort summary of what the parser CAN see in `html` — used
+    in the debug bundle so the user (or future Claude) can quickly tell
+    whether Triton's page structure shifted and which selectors moved.
+
+    Pure function — never raises. If a regex throws, we just write the
+    exception into the trace and keep going.
+    """
+    lines: list[str] = []
+    def _safe(label: str, fn) -> None:
+        try:
+            lines.append(f"{label}: {fn()}")
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"{label}: ERROR {type(exc).__name__}: {exc}")
+
+    lines.append(f"html_bytes: {len(html)}")
+    lines.append(f"contains_triton_marker: "
+                 f"{'triton' in html.lower() or 'triton-lab' in html.lower()}")
+    _safe("element_row_count",
+          lambda: len(_ROW_RE.findall(html)))
+    _safe("element_symbols_first10", lambda: ", ".join(
+        m.group("sym") for m in list(_ROW_RE.finditer(html))[:10]
+    ) or "(none)")
+    _safe("dose_group_count",
+          lambda: len(_DOSE_GROUP_RE.findall(html)))
+    _safe("dose_block_count",
+          lambda: len(_DOSE_BLOCK_RE.findall(html)))
+    _safe("rule_library_present",
+          lambda: bool(_RULE_LIBRARY_RE.search(html)))
+    _safe("habitat_dropdown_present",
+          lambda: bool(_DROPDOWN_HABITAT_RE.search(html)))
+    _safe("problem_dropdown_present",
+          lambda: bool(_DROPDOWN_PROBLEM_RE.search(html)))
+    _safe("selected_options",
+          lambda: ", ".join(
+              f'{m.group("text").strip()}' for m in
+              _SELECTED_OPTION_RE.finditer(html)
+          ) or "(none)")
+    return "\n".join(lines) + "\n"
+
+
 def _write_debug_bundle(
     hass: HomeAssistant, url: str, html: str, error: Exception,
 ) -> Path:
-    """Persist HTML + parse trace under `<config>/.storage/icpimport_debug/`.
+    """Persist URL + HTML + parse trace + error under
+    `<config>/.storage/icpimport_debug/<timestamp>/`.
 
     Best-effort: a write failure here doesn't suppress the original
-    parser error — we log and return a placeholder path.
+    parser error — we log and return the (possibly non-existent) path.
+    The user / Claude can:
+    - Open `page.html` to see exactly what we received from Triton
+    - Read `parse_trace.txt` to see what the parser COULD identify
+      (row count, dose-group count, etc.) before it gave up
+    - Read `error.txt` for the exact ParserError message
     """
     storage = Path(hass.config.path(".storage")) / DEBUG_BUNDLE_DIR
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -538,6 +585,9 @@ def _write_debug_bundle(
         bundle.mkdir(parents=True, exist_ok=True)
         (bundle / "url.txt").write_text(url, encoding="utf-8")
         (bundle / "page.html").write_text(html, encoding="utf-8")
+        (bundle / "parse_trace.txt").write_text(
+            _build_parse_trace(html), encoding="utf-8",
+        )
         (bundle / "error.txt").write_text(
             f"{type(error).__name__}: {error}\n", encoding="utf-8",
         )

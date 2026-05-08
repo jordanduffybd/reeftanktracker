@@ -88,7 +88,7 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
         """
         return self.async_show_menu(
             step_id="init",
-            menu_options=["sources", "advisor"],
+            menu_options=["sources", "targets", "advisor"],
         )
 
     async def async_step_sources(
@@ -126,6 +126,59 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             description_placeholders={
                 "param_count": str(len(INPUT_PARAMETERS)),
             },
+        )
+
+    async def async_step_targets(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Per-parameter target-range overrides.
+
+        Defaults come from `parameters.py` (the static `default_target_min/max`).
+        User-set values land in `entry.options` as `target_<param_id>_min` /
+        `target_<param_id>_max` and are read by `coordinator.get_target_range`.
+        Empty values fall back to the static default.
+
+        Only `INPUT_PARAMETERS` (the home-testable subset) get rows —
+        ICP-only params can be added later if needed.
+        """
+        if user_input is not None:
+            merged = dict(self._entry.options)
+            for k, v in user_input.items():
+                if v in (None, ""):
+                    merged.pop(k, None)
+                else:
+                    merged[k] = v
+            return self.async_create_entry(title="", data=merged)
+
+        opts = self._entry.options
+
+        def _num(*, mn: float, mx: float, step: float) -> Any:
+            return NumberSelector(NumberSelectorConfig(
+                mode="box", min=mn, max=mx, step=step,
+            ))
+
+        schema_dict: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
+        for p in INPUT_PARAMETERS:
+            min_key = f"target_{p['id']}_min"
+            max_key = f"target_{p['id']}_max"
+            # Use the parameter's own min/max as the form bounds — keeps
+            # the selector consistent with the entry-row constraints
+            # users already see for that parameter.
+            mn = float(p.get("min", 0))
+            mx = float(p.get("max", 1000))
+            step = float(p.get("step", 0.01))
+            schema_dict[vol.Optional(min_key)] = _num(mn=mn, mx=mx, step=step)
+            schema_dict[vol.Optional(max_key)] = _num(mn=mn, mx=mx, step=step)
+            suggested[min_key] = opts.get(min_key, p.get("default_target_min"))
+            suggested[max_key] = opts.get(max_key, p.get("default_target_max"))
+
+        schema = self.add_suggested_values_to_schema(
+            vol.Schema(schema_dict), suggested,
+        )
+        return self.async_show_form(
+            step_id="targets",
+            data_schema=schema,
         )
 
     async def async_step_advisor(
