@@ -1,0 +1,102 @@
+name: release
+
+# Auto-cuts a GitHub release whenever `manifest.json`'s `version` bumps
+# on the main branch. The CHANGELOG section for that version becomes
+# the release body. Idempotent: skips silently if a tag for the version
+# already exists.
+#
+# Workflow:
+# 1. PR merges to main → triggers this workflow
+# 2. Read `version` from `custom_components/reeftanktracker/manifest.json`
+# 3. If `v<version>` tag already exists, no-op
+# 4. Otherwise, extract the matching `## <version>` section from
+#    CHANGELOG.md and create a release with that body + the tag
+#
+# Why this shape: HA custom integrations carry their version in
+# `manifest.json` (used by HACS for update detection). The CHANGELOG
+# is human-curated. Pinning the release flow to those two files means
+# release notes match what's in the repo, no separate semantic-release
+# config / conventional-commit discipline required.
+
+on:
+  push:
+    branches: [main]
+  # Manual dispatch lets us re-run if a release was missed (e.g. CI
+  # outage during the merge window). Idempotent so no harm.
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create tags + releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so we can read CHANGELOG.md and check
+          # if the tag already exists. Default fetch-depth=1 wouldn't
+          # have prior tags.
+          fetch-depth: 0
+
+      - name: Read manifest version
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' custom_components/reeftanktracker/manifest.json)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Could not read version from manifest.json"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected manifest version: $VERSION"
+
+      - name: Check if release tag already exists
+        id: tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG does not exist — will create release."
+          fi
+
+      - name: Extract CHANGELOG section
+        if: steps.tag.outputs.exists == 'false'
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Match either "## VERSION" exactly or "## VERSION — title".
+          # Stop at the next "## " that's NOT this version (i.e. the
+          # next release entry). Skip the convention-blockquote header
+          # by anchoring on the version line.
+          awk -v ver="$VERSION" '
+            /^## / {
+              if (match($0, "^## " ver "($| )")) { found=1; print; next }
+              if (found) { exit }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          # If the section is empty (CHANGELOG missing this version),
+          # fall back to a stub so the release still publishes.
+          if [ ! -s release_notes.md ]; then
+            echo "## ${VERSION}" > release_notes.md
+            echo "" >> release_notes.md
+            echo "_No CHANGELOG entry found for v${VERSION}. See commit history._" >> release_notes.md
+          fi
+          echo "----- release_notes.md preview -----"
+          head -20 release_notes.md
+          echo "----- END preview -----"
+
+      - name: Create GitHub release
+        if: steps.tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "v${VERSION}" \
+            --target main \
+            --title "${VERSION}" \
+            --notes-file release_notes.md
+          echo "Released v${VERSION}"
