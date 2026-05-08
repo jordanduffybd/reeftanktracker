@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# HA runtime state (regenerated on every container start). With the
+# named-volume layout most of this lives in Docker, not the host
+# bind-mount, but stale entries from the old layout might still be
+# here.
+config/.storage/
+config/.cloud/
+config/.cache/
+config/deps/
+config/tts/
+config/.HA_VERSION
+config/.ha_run.lock
+config/home-assistant.log
+config/home-assistant.log.*
+config/home-assistant.log.fault
+config/home-assistant_v2.db
+config/home-assistant_v2.db-shm
+config/home-assistant_v2.db-wal
+config/blueprints/
+
+# Mosquitto retained-message store
+mosquitto/data/
+mosquitto/log/
+
+# Symlink target — git stores the symlink itself, but the resolved
+# directory (custom_components/reeftanktracker) lives in the parent repo
+# and shouldn't be duplicated here.

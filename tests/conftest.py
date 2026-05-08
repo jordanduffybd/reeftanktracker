@@ -42,6 +42,8 @@ def _install_ha_stubs() -> None:
         vol.Required = vol.Optional = lambda key, default=None: _Marker(key, default)
         vol.In = lambda options: _passthrough
         vol.Coerce = lambda t: _passthrough
+        vol.All = lambda *a, **kw: _passthrough
+        vol.Range = lambda **kw: _passthrough
         sys.modules["voluptuous"] = vol
 
     ha = types.ModuleType("homeassistant")
@@ -104,6 +106,11 @@ def _install_ha_stubs() -> None:
     selector = types.ModuleType("homeassistant.helpers.selector")
     selector.EntitySelector = lambda *a, **kw: lambda v: v
     selector.EntitySelectorConfig = lambda **kw: kw
+    selector.BooleanSelector = lambda *a, **kw: lambda v: v
+    selector.NumberSelector = lambda *a, **kw: lambda v: v
+    selector.NumberSelectorConfig = lambda **kw: kw
+    selector.SelectSelector = lambda *a, **kw: lambda v: v
+    selector.SelectSelectorConfig = lambda **kw: kw
     sys.modules["homeassistant.helpers.selector"] = selector
 
     entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
@@ -121,11 +128,13 @@ def _install_ha_stubs() -> None:
     # Default no-op subscriber; tests can monkeypatch this to capture
     # the registered handler for synthetic state-change events.
     event.async_track_state_change_event = lambda hass, ids, cb: (lambda: None)
+    event.async_track_time_change = lambda hass, cb, *, hour=0, minute=0, second=0: (lambda: None)
     sys.modules["homeassistant.helpers.event"] = event
 
     cv = types.ModuleType("homeassistant.helpers.config_validation")
     cv.string = str
     cv.config_entry_only_config_schema = lambda _domain: lambda config: config
+    cv.ensure_list = lambda v: v if isinstance(v, list) else [v] if v else []
     sys.modules["homeassistant.helpers.config_validation"] = cv
 
     storage = types.ModuleType("homeassistant.helpers.storage")

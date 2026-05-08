@@ -1,0 +1,55 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: reef-dev-ha
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      # /config lives in a Docker-managed named volume. Earlier we used
+      # a host bind mount for /config plus a NESTED bind for the
+      # integration source — Docker Desktop on macOS doesn't apply that
+      # nested overlay reliably across restarts (it goes empty). Using
+      # a named volume for /config means the integration mount is
+      # nested inside a Docker-internal volume, which works.
+      #
+      # Trade-off: HA state (.storage, db, logs) is no longer browsable
+      # from the Mac via dev/config/. Use `docker compose exec` to
+      # inspect, or `docker compose cp` to copy in/out.
+      - ha_config:/config
+      # Integration source — bind-mounted from the repo. Live edits
+      # propagate; restart `homeassistant` to reload Python modules.
+      - ../custom_components/reeftanktracker:/config/custom_components/reeftanktracker
+      # configuration.yaml is bind-mounted as a single file so changes
+      # on the Mac take effect after `docker compose restart homeassistant`.
+      - ./config/configuration.yaml:/config/configuration.yaml:ro
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - mosquitto
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: reef-dev-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/data:/mosquitto/data
+
+  mirror:
+    build: ./tools
+    container_name: reef-dev-mirror
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - homeassistant
+
+volumes:
+  ha_config:

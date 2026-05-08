@@ -18,6 +18,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install
-        run: pip install pytest pytest-asyncio
+        # `aiohttp` is required because icp_importer.py imports it at
+        # module level (used by the Triton :1024 API call). HA ships it
+        # at runtime; CI has bare Python.
+        run: pip install pytest pytest-asyncio aiohttp
       - name: Run tests
         run: pytest tests/

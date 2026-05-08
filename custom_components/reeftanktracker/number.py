@@ -48,7 +48,45 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: ReefDataCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = [ReefEntryNumber(coordinator, p) for p in INPUT_PARAMETERS]
+    entities: list[NumberEntity] = [
+        ReefEntryNumber(coordinator, p) for p in INPUT_PARAMETERS
+    ]
+    # Advisor form-input numbers — backed by coordinator form state, so
+    # values survive HA restarts and dashboard reloads. The Lovelace
+    # "Log water change" button references these via {{ states('...') }}
+    # in service_data.
+    entities.extend([
+        AdvisorFormNumber(
+            coordinator,
+            unique_id="reef_advisor_form_wc_percent",
+            name="Water change %",
+            icon="mdi:water-sync",
+            form_key="wc_percent",
+            unit_of_measurement="%",
+            min_value=0.0, max_value=100.0, step=0.5,
+            default=10.0,
+        ),
+        AdvisorFormNumber(
+            coordinator,
+            unique_id="reef_advisor_form_wc_salt_mix_kh",
+            name="Water change salt mix KH",
+            icon="mdi:test-tube",
+            form_key="wc_salt_mix_kh",
+            unit_of_measurement="dKH",
+            min_value=0.0, max_value=20.0, step=0.05,
+            default=8.0,
+        ),
+        AdvisorFormNumber(
+            coordinator,
+            unique_id="reef_advisor_form_demand_magnitude_pct",
+            name="Demand change magnitude (%)",
+            icon="mdi:swap-vertical",
+            form_key="demand_magnitude_pct",
+            unit_of_measurement="%",
+            min_value=0.0, max_value=100.0, step=1.0,
+            default=10.0,
+        ),
+    ])
     async_add_entities(entities)
 
 
@@ -127,3 +165,68 @@ class ReefEntryNumber(NumberEntity):
                 self.hass, SIGNAL_READING_RECORDED, _on_reading
             )
         )
+
+
+class AdvisorFormNumber(NumberEntity):
+    """A number whose state is held in coordinator's advisor form blob.
+
+    Used as an inline form field on the Alk Advisor dashboard view.
+    Submit buttons reference these via templated `service_data` like
+    `{{ states('number.reef_advisor_form_wc_percent') | float }}`.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_mode = NumberMode.BOX
+    _attr_available = True
+    _attr_device_info = DeviceInfo(
+        identifiers={(DOMAIN, DEVICE_ID)},
+        name=DEVICE_NAME,
+        manufacturer=DEVICE_MANUFACTURER,
+        model=DEVICE_MODEL,
+    )
+
+    def __init__(
+        self,
+        coordinator: ReefDataCoordinator,
+        *,
+        unique_id: str,
+        name: str,
+        icon: str,
+        form_key: str,
+        unit_of_measurement: str | None,
+        min_value: float,
+        max_value: float,
+        step: float,
+        default: float,
+    ) -> None:
+        self._coordinator = coordinator
+        self._form_key = form_key
+        self._default = default
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_native_unit_of_measurement = unit_of_measurement
+        self._attr_native_min_value = min_value
+        self._attr_native_max_value = max_value
+        self._attr_native_step = step
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._coordinator.advisor_form_value(self._form_key)
+        if v is None:
+            return self._default
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return self._default
+
+    async def async_set_native_value(self, value: float) -> None:
+        # No dispatcher subscription — subscribing caused mid-edit
+        # re-renders that scrambled in-flight text in adjacent fields.
+        # We DO need to call async_write_ha_state here because
+        # non-polling entities don't auto-refresh after a service call.
+        await self._coordinator.async_set_advisor_form_value(
+            self._form_key, float(value),
+        )
+        self.async_write_ha_state()

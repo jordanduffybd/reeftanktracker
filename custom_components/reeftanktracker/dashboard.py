@@ -386,6 +386,8 @@ def build_dashboard_config(hass: HomeAssistant | None = None) -> dict[str, Any]:
         "views": [
             _build_test_session_view(uid_map),
             _build_overview_view(uid_map),
+            _build_advisor_view(uid_map),
+            _build_dosing_plan_view(uid_map),
             _build_diagnostics_view(uid_map),
         ],
     }
@@ -411,15 +413,10 @@ def _build_test_session_view(uid_map: dict[str, str]) -> dict[str, Any]:
         }
         for p in INPUT_PARAMETERS
     ]
-    # Tank-level tiles. Use the select entities (so they're tappable to
-    # change habitat/problem/method right from the dashboard) when
-    # they're in the registry, else fall back to the read-only sensor.
-    habitat_e = _eid(uid_map, "reef_tank_habitat_select", "select") \
-        if "reef_tank_habitat_select" in uid_map \
-        else _eid(uid_map, "reef_tank_habitat")
-    problem_e = _eid(uid_map, "reef_tank_problem_select", "select") \
-        if "reef_tank_problem_select" in uid_map \
-        else _eid(uid_map, "reef_tank_problem")
+    # Tank-level tiles. The selects are the single source of truth for
+    # habitat/problem/method — tappable to change right from the dashboard.
+    habitat_e = _eid(uid_map, "reef_tank_habitat_select", "select")
+    problem_e = _eid(uid_map, "reef_tank_problem_select", "select")
     method_e = _eid(uid_map, "reef_tank_method_select", "select")
 
     context_cards = [
@@ -516,6 +513,382 @@ def _build_overview_view(uid_map: dict[str, str]) -> dict[str, Any]:
                      "icon": "mdi:calendar-clock"},
                     *cards_days,
                 ],
+            },
+        ],
+    }
+
+
+def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
+    """Alk dosing advisor — recommendation, controls, calculation details."""
+    advisor_eid = _eid(uid_map, "reef_alk_advisor_recommendation")
+
+    # Top tile: the headline recommendation
+    headline_card = {
+        "type": "tile",
+        "entity": advisor_eid,
+        "name": "Suggested daily dose",
+        "icon": "mdi:test-tube",
+        "vertical": True,
+        "state_content": ["state", "last-changed"],
+    }
+
+    # Show-your-work attributes — quick reference
+    attributes_card = {
+        "type": "entities",
+        "title": "Show your work",
+        "show_header_toggle": False,
+        "entities": [
+            {"type": "attribute", "entity": advisor_eid, "name": "KH median",
+             "attribute": "kh_median"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Target band low",
+             "attribute": "target_min"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Target band high",
+             "attribute": "target_max"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Current dose (mL/day)",
+             "attribute": "current_dose_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Suggested dose (mL/day)",
+             "attribute": "suggested_dose_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Change (mL)",
+             "attribute": "change_mL"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Change (%)",
+             "attribute": "change_pct"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Confidence",
+             "attribute": "confidence"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Reason",
+             "attribute": "reason"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Cooldown until",
+             "attribute": "cooldown_until"},
+            {"type": "attribute", "entity": advisor_eid, "name": "Calibration warning",
+             "attribute": "calibration_warning"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Last demand change", "attribute": "last_demand_change_at"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Days since demand change",
+             "attribute": "days_since_demand_change"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Observed slope (dKH/day)",
+             "attribute": "observed_slope_dkh_per_day"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec efficiency (dKH/mL)",
+             "attribute": "spec_efficiency_dkh_per_mL"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Supplement (auto-detected)",
+             "attribute": "detected_supplement_label"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec efficiency source",
+             "attribute": "spec_efficiency_source"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical potency (dKH/mL)",
+             "attribute": "empirical_potency_dkh_per_mL"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical / spec ratio",
+             "attribute": "empirical_to_spec_ratio"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Empirical basis",
+             "attribute": "empirical_potency_basis"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Spec drift warning",
+             "attribute": "spec_drift_warning"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Last water change",
+             "attribute": "last_water_change_at"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Days since water change",
+             "attribute": "days_since_water_change"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Samples excluded (WC settling)",
+             "attribute": "samples_excluded_for_wc"},
+            {"type": "attribute", "entity": advisor_eid,
+             "name": "Samples used", "attribute": "samples_used"},
+        ],
+    }
+
+    # Action buttons — call services. We don't pre-fill the values; the
+    # user enters their own in the developer-tools-style call dialog
+    # the button selector opens.
+    # Only Acknowledge / Dismiss are inline buttons — they auto-fill
+    # from the current recommendation so a no-payload click works.
+    # Log demand change / Log water change need free-text + numeric
+    # input that HA's `call-service` entity row can't capture, so those
+    # are surfaced as links into Developer Tools → Services where the
+    # user gets a real form. See `help_card` below.
+    actions_card = {
+        "type": "entities",
+        "title": "Actions",
+        "show_header_toggle": False,
+        "entities": [
+            {
+                "type": "call-service",
+                "name": "Acknowledge — I applied this in Reefbeat",
+                "icon": "mdi:check-circle",
+                "action_name": "Acknowledge",
+                "service": "reeftanktracker.acknowledge_alk_recommendation",
+                "service_data": {},
+            },
+            {
+                "type": "call-service",
+                "name": "Dismiss — ignore this suggestion",
+                "icon": "mdi:close-circle",
+                "action_name": "Dismiss",
+                "service": "reeftanktracker.dismiss_alk_recommendation",
+                "service_data": {},
+            },
+        ],
+    }
+
+    # Inline form: log a water change. The form fields are real entities
+    # owned by this integration (number/text), so the user types into them
+    # right on the dashboard. The submit button calls the service with
+    # values resolved from those entities at click time via templates.
+    wc_percent_eid = _eid(uid_map, "reef_advisor_form_wc_percent", "number")
+    wc_salt_kh_eid = _eid(uid_map, "reef_advisor_form_wc_salt_mix_kh", "number")
+    wc_notes_eid = _eid(uid_map, "reef_advisor_form_wc_notes", "text")
+    water_change_form = {
+        "type": "entities",
+        "title": "Log water change",
+        "show_header_toggle": False,
+        "entities": [
+            {"entity": wc_percent_eid, "name": "Percent volume changed (%)"},
+            {"entity": wc_salt_kh_eid, "name": "Salt mix KH (dKH, optional)"},
+            {"entity": wc_notes_eid, "name": "Notes (optional)"},
+            {
+                # The form-submit service reads each form entity's
+                # state on the server side and forwards to
+                # log_water_change. We can't put templates in
+                # service_data here because HA's `entities` card
+                # `call-service` row doesn't render them.
+                "type": "call-service",
+                "name": "Submit water change",
+                "icon": "mdi:water-sync",
+                "action_name": "Log",
+                "service": "reeftanktracker.submit_water_change_form",
+                "service_data": {},
+            },
+        ],
+    }
+
+    # Inline form: log a demand change.
+    demand_reason_eid = _eid(uid_map, "reef_advisor_form_demand_reason", "text")
+    demand_dir_eid = _eid(uid_map, "reef_advisor_form_demand_direction", "select")
+    demand_mag_eid = _eid(uid_map, "reef_advisor_form_demand_magnitude_pct", "number")
+    demand_change_form = {
+        "type": "entities",
+        "title": "Log demand change",
+        "show_header_toggle": False,
+        "entities": [
+            {"entity": demand_reason_eid, "name": "Reason (e.g. added 3 SPS frags)"},
+            {"entity": demand_dir_eid, "name": "Expected direction"},
+            {"entity": demand_mag_eid, "name": "Magnitude hint (%, optional)"},
+            {
+                "type": "call-service",
+                "name": "Submit demand change",
+                "icon": "mdi:swap-vertical",
+                "action_name": "Log",
+                "service": "reeftanktracker.submit_demand_change_form",
+                "service_data": {},
+            },
+        ],
+    }
+
+    # Admin-only ops (capture snapshot, supplement profile CRUD) stay in
+    # Developer Tools — they're rare and varied enough that the dev-tools
+    # form is fine. Markdown card explains.
+    help_card = {
+        "type": "markdown",
+        "content": (
+            "**Custom supplements** and **manual snapshots** are managed "
+            "from Settings → Developer Tools → Actions. Search for "
+            "`reeftanktracker` to find:\n\n"
+            "- `add_supplement_profile` / `list_supplement_profiles` / "
+            "`remove_supplement_profile`\n"
+            "- `capture_snapshot_now` (manual baseline, e.g. after "
+            "calibrating the KH Keeper)\n\n"
+            "**Observed vs spec:** when you acknowledge a dose change, "
+            "the advisor estimates the supplement's actual potency from "
+            "before/after slope. If it drifts more than the configured "
+            "threshold from spec, you'll see `spec_drift_warning: true` "
+            "and a note in the reason — consider switching to a Custom "
+            "profile with the observed value if it persists."
+        ),
+    }
+
+    return {
+        "title": "Alk Advisor",
+        "path": "alk-advisor",
+        "icon": "mdi:test-tube",
+        "type": "sections",
+        "max_columns": 3,
+        "sections": [
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "Alkalinity dosing advisor",
+                     "icon": "mdi:test-tube"},
+                    headline_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [attributes_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [actions_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [
+                    {"type": "heading", "heading": "Water change",
+                     "icon": "mdi:water-sync"},
+                    water_change_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [
+                    {"type": "heading", "heading": "Demand change",
+                     "icon": "mdi:swap-vertical"},
+                    demand_change_form,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [help_card],
+            },
+        ],
+    }
+
+
+def _build_dosing_plan_view(uid_map: dict[str, str]) -> dict[str, Any]:
+    """Surfaces the most-recent ICP test's habitat-aware dose plan so the
+    user can program the high-volume supplements into their RSDOSE4 heads
+    manually. The plan is sorted by importance — most-important first.
+
+    The view:
+      - Shows the active habitat/problem the plan was computed for
+      - Lists the dose recommendations + corrective dose strings
+      - Provides a re-import action so the user can change habitat/problem
+        and pull a fresh plan from Triton without re-typing the URL
+    """
+    plan_eid = _eid(uid_map, "reef_active_dosing_plan")
+
+    # Headline tile: the sensor IS a TIMESTAMP (sample-collection date),
+    # so HA renders it as "X days ago" / a relative-time label — exactly
+    # what we want for "this plan reflects a sample taken N days ago".
+    headline_tile = {
+        "type": "tile",
+        "entity": plan_eid,
+        "name": "Last test taken",
+        "icon": "mdi:beaker-plus-outline",
+        "vertical": True,
+        "state_content": ["state"],
+    }
+
+    # Active scenario as a markdown card — kills the repeated icon row +
+    # label truncation that came from `entities`/`attribute` rows.
+    summary_card = {
+        "type": "markdown",
+        "content": (
+            "{% set s = states('" + plan_eid + "') %}"
+            "{% if s in ('unknown', 'unavailable', 'none') %}"
+            "_No ICP test imported yet._"
+            "{% else %}"
+            "### Active scenario\n\n"
+            "| | |\n|---|---|\n"
+            "| Test ID | `{{ state_attr('" + plan_eid + "', 'test_id') }}` |\n"
+            "| Sample date | {{ state_attr('" + plan_eid + "', 'sample_date') }} |\n"
+            "| Imported | {{ state_attr('" + plan_eid + "', 'imported_at') }} |\n"
+            "| Active habitat | **{{ state_attr('" + plan_eid + "', 'active_habitat') }}** |\n"
+            "| Active problem | **{{ state_attr('" + plan_eid + "', 'active_problem') }}** |\n"
+            "| Originally rendered for | "
+            "{{ state_attr('" + plan_eid + "', 'rendered_for_habitat') }} / "
+            "{{ state_attr('" + plan_eid + "', 'rendered_for_problem') }} |\n"
+            "| Source | [View on Triton]({{ state_attr('" + plan_eid + "', 'url') }}) |\n"
+            "{% endif %}"
+        ),
+    }
+
+    # Dose plan as a markdown card. We use `\n\n` between recommendations
+    # to force fresh top-level bullets in the rendered list — the prior
+    # version had trailing whitespace that made every element after Ca
+    # render as a sub-bullet of Ca.
+    plan_card = {
+        "type": "markdown",
+        "content": (
+            "{% set recs = state_attr('" + plan_eid + "', 'recommendations') %}"
+            "{% if recs %}"
+            "### Dose plan — sorted by importance\n\n"
+            "{% for r in recs %}"
+            "**{{ r.symbol }}** — {{ '★' * (r.importance_stars or 0) }} "
+            "{{ r.importance_label or '' }}\n\n"
+            "{{ r.corrective_dose or '_No corrective dose suggested._' }}"
+            "{% if r.product_reference %}\n\n"
+            "*Product: {{ r.product_reference }}*"
+            "{% endif %}\n\n---\n\n"
+            "{% endfor %}"
+            "{% else %}"
+            "_No ICP test imported yet. Call_ "
+            "`reeftanktracker.import_triton_url` _from Developer Tools "
+            "→ Actions with your Triton showroom URL plus the habitat "
+            "and problem you want plan guidance for._"
+            "{% endif %}"
+        ),
+    }
+
+    help_card = {
+        "type": "markdown",
+        "content": (
+            "**Importing / re-importing:** call "
+            "`reeftanktracker.import_triton_url` from Developer Tools → "
+            "Actions with your Triton showroom URL plus the habitat and "
+            "problem you want the plan computed for. Re-running with "
+            "different inputs overwrites the active plan — useful if "
+            "you're changing tank direction (e.g. Mixed Reef → SPS) or "
+            "have a transient issue (e.g. Cyanobacteria) and want plan "
+            "guidance.\n\n"
+            "**Manual programming:** for high-volume supplements, take "
+            "the corrective-dose string above and split it across the "
+            "RSDOSE4 head schedule (e.g. \"17.12 ml for 1 day\" → 17 ml "
+            "spread over the day). The advisor view handles alkalinity "
+            "trend-based daily-dose tuning separately."
+        ),
+    }
+
+    return {
+        "title": "Dosing Plan",
+        "path": "dosing-plan",
+        "icon": "mdi:beaker-plus-outline",
+        "type": "sections",
+        "max_columns": 3,
+        "sections": [
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading",
+                     "heading": "Active dosing plan from latest ICP test",
+                     "icon": "mdi:beaker-plus-outline"},
+                    headline_tile,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [
+                    summary_card,
+                    plan_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 1,
+                "cards": [help_card],
             },
         ],
     }

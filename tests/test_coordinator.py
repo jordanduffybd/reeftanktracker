@@ -159,6 +159,39 @@ async def test_icp_test_dedupes_by_test_id(hass):
 
 
 @pytest.mark.asyncio
+async def test_latest_icp_test_returns_most_recent_by_imported_at(hass):
+    """The dosing-plan sensor reads `latest_icp_test` — must return the
+    record with the highest `imported_at`, regardless of insertion order."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    older = {
+        "test_id": "T-OLDER", "sample_date": "2026-04-01",
+        "imported_at": "2026-04-01T10:00:00+00:00",
+        "elements": {}, "recommendations": [],
+    }
+    newer = {
+        "test_id": "T-NEWER", "sample_date": "2026-05-01",
+        "imported_at": "2026-05-06T10:00:00+00:00",
+        "elements": {}, "recommendations": [],
+    }
+    # Insert newer first to prove the sort works regardless of order.
+    await coord.async_record_icp_test(newer)
+    await coord.async_record_icp_test(older)
+
+    latest = coord.latest_icp_test
+    assert latest is not None
+    assert latest["test_id"] == "T-NEWER"
+
+
+@pytest.mark.asyncio
+async def test_latest_icp_test_returns_none_when_empty(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    assert coord.latest_icp_test is None
+
+
+@pytest.mark.asyncio
 async def test_icp_record_requires_test_id(hass):
     coord = ReefDataCoordinator(hass)
     await coord.async_load()
@@ -180,3 +213,157 @@ async def test_readings_persist_across_load(hass):
     await coord2.async_load()
 
     assert coord2.latest_reading("kh")["value"] == 8.4
+
+
+@pytest.mark.asyncio
+async def test_advisor_storage_round_trips(hass):
+    """Snapshots, ack, dismiss, demand-change persist and round-trip."""
+    coord1 = ReefDataCoordinator(hass)
+    await coord1.async_load()
+
+    await coord1.async_record_advisor_snapshot(
+        "kh", at="2026-05-06T23:55:00+10:00", kh=9.08, dose_mL=3.0,
+    )
+    await coord1.async_record_advisor_acknowledgment(
+        "kh", applied_value_mL=2.7, prev_value_mL=3.0,
+    )
+    await coord1.async_record_advisor_dismissal(
+        "kh", suggested_value_mL=2.7,
+    )
+    await coord1.async_record_advisor_demand_change(
+        "kh", reason="added 3 SPS frags", expected_direction="increase",
+        magnitude_hint_pct=10.0,
+    )
+
+    # Re-load — same store payload
+    coord2 = ReefDataCoordinator(hass)
+    coord2._store = coord1._store  # type: ignore[attr-defined]
+    await coord2.async_load()
+
+    snaps = coord2.advisor_snapshots("kh")
+    assert len(snaps) == 1
+    assert snaps[0]["kh"] == 9.08
+    assert snaps[0]["dose_mL"] == 3.0
+
+    acks = coord2.advisor_acknowledgments("kh")
+    assert len(acks) == 1
+    assert acks[0]["applied_value_mL"] == 2.7
+    assert acks[0]["prev_value_mL"] == 3.0
+
+    dismisses = coord2.advisor_dismissals("kh")
+    assert len(dismisses) == 1
+    assert dismisses[0]["suggested_value_mL"] == 2.7
+
+    demands = coord2.advisor_demand_changes("kh")
+    assert len(demands) == 1
+    assert demands[0]["reason"] == "added 3 SPS frags"
+    assert demands[0]["expected_direction"] == "increase"
+    assert demands[0]["magnitude_hint_pct"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_advisor_blob_backfilled_on_upgrade(hass):
+    """Old install without `advisor` key — async_load should backfill."""
+    from homeassistant.helpers.storage import Store
+
+    # Pre-populate a Store with v0 schema (no advisor blob).
+    store = Store(hass, 1, "old")
+    await store.async_save({
+        "tank": {"name": "Reef Tank", "habitat": "Mixed Reef",
+                 "problem": "None", "method": "Unspecified"},
+        "readings": [], "inventory": [], "icp_tests": [],
+        "user_removed_dashboard": False,
+    })
+
+    coord = ReefDataCoordinator(hass)
+    coord._store = store  # type: ignore[attr-defined]
+    await coord.async_load()
+
+    # Backfill should have created an empty advisor blob and per-param subdict
+    assert coord.advisor_snapshots("kh") == []
+    assert coord.advisor_acknowledgments("kh") == []
+    assert coord.advisor_water_changes("kh") == []
+    assert coord.supplement_profiles == []
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_lifecycle(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    entry = await coord.async_add_supplement_profile(
+        label="Brightwell Alkalin8.3",
+        eff_dkh_per_mL_per_100L=0.083,
+        label_patterns=["Alkalin8", "ALKALIN 8"],   # mixed case in
+        notes="Vendor: brightwellaquatics.com",
+    )
+    assert entry["id"] == "brightwell_alkalin8_3"
+    assert entry["label"] == "Brightwell Alkalin8.3"
+    assert entry["eff_dkh_per_mL_per_100L"] == 0.083
+    assert entry["label_patterns"] == ["alkalin8", "alkalin 8"]
+    assert entry["created_at"]
+    assert len(coord.supplement_profiles) == 1
+
+    await coord.async_remove_supplement_profile("brightwell_alkalin8_3")
+    assert coord.supplement_profiles == []
+
+    with pytest.raises(ValueError):
+        await coord.async_remove_supplement_profile("nonexistent")
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_slug_collision_with_builtin(hass):
+    """Label that slugs to a builtin id ('Custom' → 'custom') gets a suffix."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    entry = await coord.async_add_supplement_profile(
+        label="Custom",
+        eff_dkh_per_mL_per_100L=0.15,
+    )
+    assert entry["id"] == "custom_2"
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_slug_collision_with_existing_user(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    a = await coord.async_add_supplement_profile(
+        label="Brightwell Alkalin8.3", eff_dkh_per_mL_per_100L=0.083,
+    )
+    b = await coord.async_add_supplement_profile(
+        label="Brightwell Alkalin8.3", eff_dkh_per_mL_per_100L=0.083,
+    )
+    assert a["id"] == "brightwell_alkalin8_3"
+    assert b["id"] == "brightwell_alkalin8_3_2"
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_round_trip(hass):
+    coord1 = ReefDataCoordinator(hass)
+    await coord1.async_load()
+    await coord1.async_add_supplement_profile(
+        label="Brightwell Alkalin8.3", eff_dkh_per_mL_per_100L=0.083,
+        label_patterns=["alkalin8"],
+    )
+
+    coord2 = ReefDataCoordinator(hass)
+    coord2._store = coord1._store  # type: ignore[attr-defined]
+    await coord2.async_load()
+    profiles = coord2.supplement_profiles
+    assert len(profiles) == 1
+    assert profiles[0]["id"] == "brightwell_alkalin8_3"
+    assert profiles[0]["label_patterns"] == ["alkalin8"]
+
+
+@pytest.mark.asyncio
+async def test_water_change_round_trip(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    await coord.async_record_water_change(
+        "kh", percent=10.0, salt_mix_kh=8.0, notes="Red Sea Coral Pro",
+    )
+    wcs = coord.advisor_water_changes("kh")
+    assert len(wcs) == 1
+    assert wcs[0]["percent"] == 10.0
+    assert wcs[0]["salt_mix_kh"] == 8.0
+    assert wcs[0]["notes"] == "Red Sea Coral Pro"
