@@ -506,6 +506,8 @@ def _build_param_advisor_view(
             "{{ row('Days since demand change', 'days_since_demand_change') }}"
             "{{ row('Last water change', 'last_water_change_at') }}"
             "{{ row('Days since water change', 'days_since_water_change') }}"
+            "{{ row('NO3:PO4 ratio', 'redfield_ratio') }}"
+            "{{ row('Redfield warning', 'redfield_warning') }}"
         ),
     }
 

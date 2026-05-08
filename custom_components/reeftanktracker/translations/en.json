@@ -20,7 +20,9 @@
           "targets": "Target ranges",
           "advisor": "Alk dosing advisor",
           "advisor_calcium": "Calcium dosing advisor",
-          "advisor_magnesium": "Magnesium dosing advisor"
+          "advisor_magnesium": "Magnesium dosing advisor",
+          "advisor_nitrate": "Nitrate dosing advisor",
+          "advisor_phosphate": "Phosphate dosing advisor"
         }
       },
       "sources": {
@@ -96,6 +98,67 @@
           "advisor_magnesium_target_max": "SPS-friendly default 1350 ppm.",
           "advisor_magnesium_window_days": "How far back the algorithm looks. **Default 90 days** for sparse monthly testing.",
           "advisor_magnesium_hysteresis": "Default 20 ppm — within typical Mg test-kit noise (kits read in coarser units than Ca, ±20-30 ppm common). Catches real drifts without chasing kit jitter."
+        }
+      },
+      "advisor_nitrate": {
+        "title": "Nitrate dosing advisor",
+        "description": "Configure the Nitrate dosing recommendation engine. Recommendation-only — never writes to your doser. **NO3 supplements are REMOVERS** (NPX, Quantum HR/LR Nitrate Remover) — raising the dose REDUCES NO3. Spec efficiency is therefore NEGATIVE (e.g. -0.5 = 1 mL per 100L removes 0.5 ppm NO3 over the correction period). Modern reef target is 1–10 ppm; the old 'ULNS / 0 ppm' approach is abandoned because too-low NO3 starves zoox and triggers dinoflagellates. A **floor guard** refuses any further increase in removal dose when NO3 is at/below 0.5 ppm. The advisor also computes the NO3:PO4 ratio (Redfield) and flags imbalance (cyano risk if PO4 too high relative to NO3, dino risk if reversed). Defaults are tuned for **sparse manual testing — 1 to 2 readings per month** (90-day window, min 2 readings, 30-day cooldown). Snapshots come from your manual Nitrate readings — record via the Test Session view.",
+        "data": {
+          "advisor_nitrate_enabled": "Enable Nitrate advisor",
+          "advisor_nitrate_heads": "Nitrate-remover dose head sensors",
+          "advisor_nitrate_supplement_profile": "Supplement profile",
+          "advisor_nitrate_spec_efficiency": "Spec efficiency (ppm NO3 per mL per 100L; NEGATIVE for removers)",
+          "advisor_nitrate_target_min": "Target band low (ppm)",
+          "advisor_nitrate_target_max": "Target band high (ppm)",
+          "advisor_nitrate_window_days": "Rolling window length (days)",
+          "advisor_nitrate_min_samples": "Minimum readings required to suggest",
+          "advisor_nitrate_min_trend_days": "Consecutive readings outside band before adjusting",
+          "advisor_nitrate_cooldown_days": "Cooldown after acknowledging a change (days)",
+          "advisor_nitrate_dismiss_cooldown_days": "Cooldown after dismissing a suggestion (days)",
+          "advisor_nitrate_step_cap_pct": "Max dose change per recommendation (%)",
+          "advisor_nitrate_hysteresis": "Hysteresis around target band (ppm)",
+          "advisor_nitrate_min_samples_after_event": "Required readings after demand change before resuming",
+          "advisor_nitrate_correction_period_days": "Spread the correction over (days)"
+        },
+        "data_description": {
+          "advisor_nitrate_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses an NO3 remover (NPX, HR/LR Nitrate Remover). Multiple heads are summed.",
+          "advisor_nitrate_supplement_profile": "Pick a Nitrate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below.",
+          "advisor_nitrate_spec_efficiency": "**NEGATIVE for removers.** Default -0.5 ppm NO3 reduction per mL per 100L (rough NPX/HR-Nitrate average — bacterial response varies wildly with population size). Use 'Custom' and override here as you observe actual potency.",
+          "advisor_nitrate_target_min": "Modern consensus 1 ppm. Below 0.5 ppm triggers dinoflagellates per BRStv 52 Weeks.",
+          "advisor_nitrate_target_max": "Modern consensus 10 ppm. SPS-leaning target lower (5 ppm); LPS tolerates higher (up to 20 ppm).",
+          "advisor_nitrate_window_days": "**Default 90 days** for sparse monthly testing. Carbon-dose response is non-linear; longer window smooths bacterial-population variance.",
+          "advisor_nitrate_step_cap_pct": "Default 10% — conservative because remover potency varies with bacterial population. Big jumps risk overshooting and bottoming out NO3.",
+          "advisor_nitrate_hysteresis": "Default 0.5 ppm — within Salifert NO3 test-kit precision."
+        }
+      },
+      "advisor_phosphate": {
+        "title": "Phosphate dosing advisor",
+        "description": "Configure the Phosphate dosing recommendation engine. Recommendation-only — never writes to your doser. **PO4 supplements are REMOVERS** (Quantum AR Phosphate, NPX, lanthanum chloride solutions) — raising the dose REDUCES PO4. Spec efficiency is NEGATIVE (e.g. -0.04 = 1 mL per 100L removes 0.04 ppm PO4 over the correction period). Modern target is 0.03–0.10 ppm; below 0.02 ppm triggers dinoflagellates. A **floor guard** refuses any further increase in removal dose when PO4 is at/below 0.03 ppm. The advisor also computes the NO3:PO4 ratio (Redfield) and flags imbalance. Defaults are tuned for **sparse manual testing**. Snapshots come from your manual Phosphate readings — record via the Test Session view.",
+        "data": {
+          "advisor_phosphate_enabled": "Enable Phosphate advisor",
+          "advisor_phosphate_heads": "Phosphate-remover dose head sensors",
+          "advisor_phosphate_supplement_profile": "Supplement profile",
+          "advisor_phosphate_spec_efficiency": "Spec efficiency (ppm PO4 per mL per 100L; NEGATIVE for removers)",
+          "advisor_phosphate_target_min": "Target band low (ppm)",
+          "advisor_phosphate_target_max": "Target band high (ppm)",
+          "advisor_phosphate_window_days": "Rolling window length (days)",
+          "advisor_phosphate_min_samples": "Minimum readings required to suggest",
+          "advisor_phosphate_min_trend_days": "Consecutive readings outside band before adjusting",
+          "advisor_phosphate_cooldown_days": "Cooldown after acknowledging a change (days)",
+          "advisor_phosphate_dismiss_cooldown_days": "Cooldown after dismissing a suggestion (days)",
+          "advisor_phosphate_step_cap_pct": "Max dose change per recommendation (%)",
+          "advisor_phosphate_hysteresis": "Hysteresis around target band (ppm)",
+          "advisor_phosphate_min_samples_after_event": "Required readings after demand change before resuming",
+          "advisor_phosphate_correction_period_days": "Spread the correction over (days)"
+        },
+        "data_description": {
+          "advisor_phosphate_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses a PO4 remover (Quantum AR, lanthanum solution, NPX). Multiple heads are summed.",
+          "advisor_phosphate_supplement_profile": "Pick a Phosphate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below.",
+          "advisor_phosphate_spec_efficiency": "**NEGATIVE for removers.** Default -0.04 ppm PO4 reduction per mL per 100L (lanthanum stoichiometry). Override per your specific product as you observe actual potency.",
+          "advisor_phosphate_target_min": "Modern consensus 0.03 ppm. Below 0.02 triggers dinoflagellates.",
+          "advisor_phosphate_target_max": "Modern consensus 0.10 ppm. SPS prefers 0.03–0.06; LPS tolerates 0.05–0.10.",
+          "advisor_phosphate_step_cap_pct": "Default 10% — conservative. Lanthanum overdosing strips PO4 fast and can shock corals.",
+          "advisor_phosphate_hysteresis": "Default 0.01 ppm — within Hanna ULR PO4 precision."
         }
       }
     }

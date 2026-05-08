@@ -122,8 +122,70 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "default_eff_per_mL_per_100L": 1.0,
         "value_unit": "ppm",
     },
-    # 0.5.3+ adds "nitrate", "phosphate" with multi-supplement
-    # coordination + remover semantics + Redfield-ratio safety guards.
+    "nitrate": {
+        # Modern reef consensus (2018+): 1–10 ppm. The old "ULNS / 0
+        # ppm" approach is abandoned — too-low NO3 starves zoox and
+        # triggers dinoflagellates. SPS-leaning 1–5; mixed 2–10; LPS
+        # tolerant 5–20.
+        "target_min": 1.0,
+        "target_max": 10.0,
+        # Salifert Profi-Test NO3 reads in ~0.5-1 ppm increments.
+        "hysteresis": 0.5,
+        # Carbon-dose response is non-linear; conservative step cap.
+        "step_cap_pct": 10.0,
+        # Same sparse-cadence defaults as Ca/Mg.
+        "window_days": 90,
+        "min_samples": 2,
+        "min_trend_days": 2,
+        "min_samples_after_event": 1,
+        "cooldown_days": 30.0,
+        "dismiss_cooldown_days": 14.0,
+        "correction_period_days": 30.0,
+        "empirical_drift_pct": 50.0,
+        "wc_settling_hours": 24.0,
+        # NEGATIVE potency — NO3 supplements are REMOVERS. Raising
+        # dose REDUCES NO3. The algorithm handles signed eff
+        # naturally (delta / (signed_eff × days) → signed change_mL).
+        # -0.5 is a rough NPX/HR-Nitrate average; bacterial response
+        # varies wildly with population size. User can override via
+        # Custom profile + manual spec_efficiency.
+        "default_eff_per_mL_per_100L": -0.5,
+        "value_unit": "ppm",
+        # Floor below which the floor guard refuses to recommend
+        # ANY further removal-dose increase (regardless of what the
+        # algorithm computes). Stripping NO3 below 0.5 ppm is the
+        # canonical dinoflagellate-outbreak setup per BRStv 52 Weeks.
+        "floor_value": 0.5,
+    },
+    "phosphate": {
+        # 0.03–0.10 ppm consensus. Below 0.02 ppm → dinoflagellate
+        # outbreak risk. SPS 0.03–0.06; mixed/LPS 0.05–0.10.
+        "target_min": 0.03,
+        "target_max": 0.10,
+        # Hanna ULR PO4 reads in 0.001 ppm; 0.01 ppm hysteresis
+        # catches drift without chasing kit jitter.
+        "hysteresis": 0.01,
+        "step_cap_pct": 10.0,
+        # Same sparse-cadence defaults as Ca/Mg/NO3.
+        "window_days": 90,
+        "min_samples": 2,
+        "min_trend_days": 2,
+        "min_samples_after_event": 1,
+        "cooldown_days": 30.0,
+        "dismiss_cooldown_days": 14.0,
+        "correction_period_days": 30.0,
+        "empirical_drift_pct": 50.0,
+        "wc_settling_hours": 24.0,
+        # NEGATIVE potency — phosphate removers (lanthanum-based,
+        # carbon dosing) reduce PO4. Lanthanum is roughly
+        # stoichiometric: ~3.6 mg PO4 bound per mL of typical
+        # solution → ~0.04 ppm PO4 reduction per mL per 100L.
+        "default_eff_per_mL_per_100L": -0.04,
+        "value_unit": "ppm",
+        # Floor: refuse increase when PO4 ≤ 0.03. Stripping below
+        # this is dinoflagellate territory.
+        "floor_value": 0.03,
+    },
 }
 
 
@@ -488,10 +550,21 @@ def _apply_safety_guards(
     See `~/.claude/projects/.../memory/reference_reef_dosing_research.md`
     for the full reasoning.
     """
-    if param_id != "calcium":
+    if param_id == "calcium":
+        return _apply_snowstorm_guard(coordinator, rec)
+    if param_id in ("nitrate", "phosphate"):
+        rec = _apply_floor_guard(coordinator, param_id, rec)
+        rec = _apply_redfield_warning(coordinator, param_id, rec)
         return rec
+    return rec
 
-    # Only check if the algorithm is recommending an INCREASE
+
+def _apply_snowstorm_guard(
+    coordinator: ReefDataCoordinator,
+    rec: Recommendation,
+) -> Recommendation:
+    """Snowstorm guard for calcium. Refuses to recommend RAISING
+    Calcium dose when alk>10 OR Mg<1200. See module docstring."""
     if (
         rec.current_dose_mL is None
         or rec.suggested_dose_mL is None
@@ -499,8 +572,6 @@ def _apply_safety_guards(
     ):
         return rec
 
-    # Cross-param snapshot reads — alk advisor and Mg advisor each
-    # store snapshots keyed by their own param_id.
     latest_kh = _latest_snapshot_value(coordinator, "kh")
     latest_mg = _latest_snapshot_value(coordinator, "magnesium")
 
@@ -518,7 +589,6 @@ def _apply_safety_guards(
     if not triggered:
         return rec
 
-    # Override the recommendation: hold current dose, mark guard active
     rec.suggested_dose_mL = rec.current_dose_mL
     rec.state = rec.current_dose_mL
     rec.change_mL = 0.0
@@ -530,4 +600,111 @@ def _apply_safety_guards(
         f"consensus is fix Mg, then alk + Ca settle. Original advisor "
         f"reasoning: {rec.reason}"
     )
+    return rec
+
+
+def _apply_floor_guard(
+    coordinator: ReefDataCoordinator,
+    param_id: str,
+    rec: Recommendation,
+) -> Recommendation:
+    """Floor guard for nutrient REMOVERS (NO3, PO4).
+
+    Refuses to recommend INCREASING removal dose when the parameter is
+    already at/below the floor value. Stripping NO3 below ~0.5 ppm or
+    PO4 below ~0.03 ppm is the canonical dinoflagellate-outbreak
+    setup (BRStv 52 Weeks of Reefing, modern reef consensus).
+
+    For remover supplements, "increase dose" = "remove more" =
+    "lower the value further" — exactly what we want to PREVENT
+    when the value is already at floor.
+
+    Defensive: if no median is available (advisor still warming up,
+    no snapshots), pass through unchanged. The user sees a regular
+    "insufficient samples" recommendation in that case, no false
+    floor-guard alarm.
+    """
+    floor = PARAM_DEFAULTS.get(param_id, {}).get("floor_value")
+    if floor is None:
+        return rec
+    if (
+        rec.current_dose_mL is None
+        or rec.suggested_dose_mL is None
+        or rec.suggested_dose_mL <= rec.current_dose_mL
+    ):
+        return rec  # not an increase — pass through
+    median = rec.kh_median
+    if median is None:
+        return rec  # no data — defensive pass-through
+    if median > floor:
+        return rec  # safely above floor
+
+    rec.suggested_dose_mL = rec.current_dose_mL
+    rec.state = rec.current_dose_mL
+    rec.change_mL = 0.0
+    rec.change_pct = 0.0
+    rec.confidence = "low"
+    label = param_id.capitalize()
+    unit = PARAM_DEFAULTS[param_id].get("value_unit", "ppm")
+    rec.reason = (
+        f"⚠ Floor guard suppressed {label} removal-dose increase: "
+        f"{label} median {median:.3f} {unit} ≤ floor {floor:.2f} {unit}. "
+        f"Stripping below this risks dinoflagellate outbreak — let the "
+        f"value recover before increasing removal. Original advisor "
+        f"reasoning: {rec.reason}"
+    )
+    return rec
+
+
+# Redfield-ratio thresholds (NO3:PO4 by mass). NSW ratio is ~100:1
+# by mass (16:1 molar). Reef tanks tolerate a wide band, but extremes
+# trigger nuisance algae:
+# - Below 50:1 (PO4 high relative to NO3) → cyanobacteria
+# - Above 200:1 (NO3 high relative to PO4) → dinoflagellates
+# Source: BRStv 52 Weeks Ep. 17, Triton lab guidance.
+REDFIELD_LOW = 50.0
+REDFIELD_HIGH = 200.0
+
+
+def _apply_redfield_warning(
+    coordinator: ReefDataCoordinator,
+    param_id: str,
+    rec: Recommendation,
+) -> Recommendation:
+    """Soft warning for NO3/PO4 imbalance.
+
+    Reads the latest NO3 and PO4 medians and computes the mass ratio.
+    Outside [50:1, 200:1] sets `redfield_warning=True` and prepends
+    a warning to the reason text. NOT a hard block — the algorithm
+    still produces a recommendation. The user sees the imbalance flag
+    and can decide whether to address it.
+
+    Surfaces on both NO3 and PO4 advisors (each can fire the warning
+    independently when its own snapshots update).
+    """
+    latest_no3 = _latest_snapshot_value(coordinator, "nitrate")
+    latest_po4 = _latest_snapshot_value(coordinator, "phosphate")
+    if latest_no3 is None or latest_po4 is None or latest_po4 <= 0.0:
+        return rec
+    ratio = latest_no3 / latest_po4
+    in_band = REDFIELD_LOW <= ratio <= REDFIELD_HIGH
+    # Always set the attribute so the dashboard can show "ratio: X
+    # (in/out of band)" — this is diagnostic data even when in band.
+    rec.redfield_ratio = ratio
+    rec.redfield_warning = not in_band
+    if in_band:
+        return rec
+    if ratio < REDFIELD_LOW:
+        warn = (
+            f"⚠ Redfield imbalance: NO3:PO4 = {ratio:.0f}:1 < "
+            f"{REDFIELD_LOW:.0f}:1 (PO4 too high relative to NO3 — "
+            f"cyanobacteria risk)."
+        )
+    else:
+        warn = (
+            f"⚠ Redfield imbalance: NO3:PO4 = {ratio:.0f}:1 > "
+            f"{REDFIELD_HIGH:.0f}:1 (NO3 too high relative to PO4 — "
+            f"dinoflagellate risk)."
+        )
+    rec.reason = f"{warn} {rec.reason}"
     return rec

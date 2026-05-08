@@ -94,9 +94,8 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 "advisor",
                 "advisor_calcium",
                 "advisor_magnesium",
-                # 0.5.3+ will add: "advisor_nitrate", "advisor_phosphate"
-                # — same pattern, different param_id, plus multi-supplement
-                # coordination + remover semantics.
+                "advisor_nitrate",
+                "advisor_phosphate",
             ],
         )
 
@@ -352,6 +351,26 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             user_input, param_id="magnesium",
         )
 
+    async def async_step_advisor_nitrate(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Nitrate dosing advisor configuration. Same shape as Ca/Mg
+        but the supplements are REMOVERS (NPX, HR/LR Nitrate Remover) —
+        spec_efficiency is signed NEGATIVE and the algorithm uses the
+        sign to compute "raise removal dose to lower NO3"."""
+        return await self._render_param_advisor_step(
+            user_input, param_id="nitrate",
+        )
+
+    async def async_step_advisor_phosphate(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Phosphate dosing advisor configuration. Removers (Quantum
+        AR Phosphate, NPX, GFO). Same NEGATIVE-eff convention as NO3."""
+        return await self._render_param_advisor_step(
+            user_input, param_id="phosphate",
+        )
+
     async def _render_param_advisor_step(
         self, user_input: dict[str, Any] | None, *, param_id: str,
     ) -> FlowResult:
@@ -414,6 +433,33 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
                 # Foundation C = 1.0 ppm Mg / mL / 100L; powder
                 # supplements at higher concentrations exist.
                 "spec_eff": (0.1, 50.0, 0.1),
+            },
+            "nitrate": {
+                # Modern reef target band 1–10 ppm; allow up to 50
+                # for LPS-tolerant tanks transitioning down.
+                "target": (0.0, 50.0, 0.1),
+                # Salifert NO3 reads ±0.5 ppm; Hanna HI736 reads
+                # ±0.1. 5 ppm covers any plausible setup.
+                "hysteresis": (0.0, 5.0, 0.1),
+                # SIGNED eff. NO3 supplements REDUCE the value, so
+                # spec_efficiency is negative (e.g. -0.5 = "1 mL per
+                # 100L removes 0.5 ppm NO3 over the correction
+                # period"). Bounds allow positive too in case a
+                # researcher wants to model a nitrate ADDITION
+                # (rare — only for ULNS recovery).
+                "spec_eff": (-50.0, 50.0, 0.01),
+            },
+            "phosphate": {
+                # 0.03–0.10 ppm consensus; allow up to 1.0 ppm for
+                # tanks recovering from a phosphate spike.
+                "target": (0.0, 1.0, 0.001),
+                # Hanna ULR PO4 reads ±0.001 ppm; 0.5 ppm covers
+                # any setup.
+                "hysteresis": (0.0, 0.5, 0.001),
+                # SIGNED eff — same convention as nitrate. Negative
+                # for removers, positive (rare) if dosing PO4.
+                # Lanthanum potency is ~0.04 ppm/mL/100L.
+                "spec_eff": (-10.0, 10.0, 0.001),
             },
         }
         bounds = SCHEMA_BOUNDS.get(param_id, {
