@@ -161,30 +161,71 @@ class ReefLatestSensor(_ReefSensorBase):
 
     @property
     def native_value(self) -> float | None:
+        return self._resolve_latest()[0]
+
+    def _resolve_latest(
+        self,
+    ) -> tuple[float | None, str | None]:
+        """Return `(value, source_label)` for the freshest known reading.
+
+        Compares the most-recent recorded reading (manual / ICP / auto)
+        against the live auto-source state and returns whichever has
+        the newer timestamp. Without this comparison, a stale recorded
+        reading would dominate forever — e.g. a manual KH from 2 days
+        ago would beat the KH Keeper sensor reading 7.84 right now,
+        because the auto-source listener filters out unchanged values
+        and so never records a fresh entry when the device keeps
+        reporting the same number across measurements.
+
+        `source_label` is one of: 'manual', 'icp', 'auto', 'auto-live'
+        ('auto-live' = pulled directly from the auto-source's current
+        state because it's newer than any recorded reading).
+        """
         latest = self._coordinator.latest_reading(self._param["id"])
-        if latest is not None:
-            return _round(latest["value"], self._param.get("precision"))
-        # Auto fallback — coordinator resolves user-configured override
-        # over the hardcoded default in parameters.py.
         auto_src = self._coordinator.get_auto_source(self._param["id"])
+
+        auto_value: float | None = None
+        auto_at: datetime | None = None
         if auto_src:
             state = self.hass.states.get(auto_src)
-            if state and state.state not in ("unknown", "unavailable", None):
+            if state and state.state not in (
+                "unknown", "unavailable", "none", "", None,
+            ):
                 try:
-                    return _round(float(state.state), self._param.get("precision"))
+                    auto_value = float(state.state)
+                    # `last_changed` is when the state VALUE last
+                    # changed (vs `last_updated` which fires on any
+                    # state-object refresh). When the auto-source has
+                    # a fresh non-stale value, last_changed reflects
+                    # that. For KH Keeper the underlying bridge
+                    # publishes only on test completion, so
+                    # last_changed = test time.
+                    auto_at = state.last_changed or state.last_updated
                 except (ValueError, TypeError):
-                    return None
-        return None
+                    auto_value = None
+
+        precision = self._param.get("precision")
+
+        if latest is not None and auto_at is not None and auto_value is not None:
+            try:
+                latest_at = datetime.fromisoformat(latest["sample_taken_at"])
+                # Both have timestamps — prefer the newer.
+                if auto_at > latest_at:
+                    return _round(auto_value, precision), "auto-live"
+                return _round(latest["value"], precision), latest.get("source")
+            except (ValueError, TypeError):
+                pass
+
+        if latest is not None:
+            return _round(latest["value"], precision), latest.get("source")
+        if auto_value is not None:
+            return _round(auto_value, precision), "auto-live"
+        return None, None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         latest = self._coordinator.latest_reading(self._param["id"])
         auto_src = self._coordinator.get_auto_source(self._param["id"])
-        # Effective target range (user override from Options-flow
-        # "Target ranges" page wins over the static default in
-        # parameters.py). Surfaced as attributes on every latest
-        # sensor so dashboards and automations can reason about
-        # in/out-of-band without hardcoding numbers.
         target_min, target_max = self._coordinator.get_target_range(
             self._param["id"]
         )
@@ -193,9 +234,31 @@ class ReefLatestSensor(_ReefSensorBase):
             "target_min": target_min,
             "target_max": target_max,
         }
-        if not latest:
-            attrs["source"] = "auto" if auto_src else None
-        else:
+
+        # Determine which value won — the live auto-source override
+        # or a recorded reading — by re-running the resolver. Then
+        # populate source-specific attributes. This keeps the
+        # `source` / `sample_taken_at` attributes consistent with the
+        # state value the user actually sees.
+        value, source = self._resolve_latest()
+        if source == "auto-live" and auto_src:
+            state = self.hass.states.get(auto_src)
+            sample_at = (
+                (state.last_changed or state.last_updated).isoformat()
+                if state else None
+            )
+            attrs.update({
+                "source": "auto-live",
+                "method": None,
+                "sample_taken_at": sample_at,
+                "recorded_at": sample_at,
+                "test_id": None,
+                "notes": (
+                    f"Pulled live from {auto_src} — newer than any "
+                    f"recorded reading."
+                ),
+            })
+        elif latest is not None:
             attrs.update({
                 "source": latest["source"],
                 "method": latest.get("method"),
@@ -204,10 +267,9 @@ class ReefLatestSensor(_ReefSensorBase):
                 "test_id": latest.get("test_id"),
                 "notes": latest.get("notes"),
             })
-        # Compute in_target_band only when both the value AND the band
-        # are known. None propagates so consumers can distinguish
-        # "no target set" from "out of target".
-        value = self.native_value
+        else:
+            attrs["source"] = "auto" if auto_src else None
+
         if (
             value is not None
             and target_min is not None

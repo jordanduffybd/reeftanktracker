@@ -149,6 +149,57 @@ def _install_ha_stubs() -> None:
     sys.modules["homeassistant.util"] = util_pkg
     sys.modules["homeassistant.util.dt"] = util_dt
 
+    # `homeassistant.components.sensor` — required for sensor.py to
+    # import. Stubs the entity base + device-class enums.
+    components = types.ModuleType("homeassistant.components")
+    components.__path__ = []
+    sys.modules["homeassistant.components"] = components
+
+    sensor_mod = types.ModuleType("homeassistant.components.sensor")
+    class _SensorEntity:
+        _attr_native_unit_of_measurement = None
+        _attr_state_class = None
+        _attr_device_class = None
+        _attr_has_entity_name = True
+        _attr_unique_id = None
+        _attr_name = None
+        _attr_translation_key = None
+        _attr_extra_state_attributes: dict = {}
+        _attr_icon = None
+        _attr_entity_category = None
+        _attr_should_poll = False
+        async def async_added_to_hass(self): pass
+        def async_write_ha_state(self): pass
+    class _Enum:
+        def __init__(self, name): self.name = name
+        def __getattr__(self, k): return _Enum(k)
+    sensor_mod.SensorEntity = _SensorEntity
+    sensor_mod.SensorDeviceClass = _Enum("SensorDeviceClass")
+    sensor_mod.SensorStateClass = _Enum("SensorStateClass")
+    sys.modules["homeassistant.components.sensor"] = sensor_mod
+
+    device_registry = types.ModuleType(
+        "homeassistant.helpers.device_registry",
+    )
+    device_registry.DeviceInfo = lambda **kw: kw
+    sys.modules["homeassistant.helpers.device_registry"] = device_registry
+
+    entity_platform = types.ModuleType(
+        "homeassistant.helpers.entity_platform",
+    )
+    entity_platform.AddEntitiesCallback = type(None)
+    sys.modules["homeassistant.helpers.entity_platform"] = entity_platform
+
+    dispatcher2 = sys.modules["homeassistant.helpers.dispatcher"]
+    if not hasattr(dispatcher2, "async_dispatcher_connect"):
+        dispatcher2.async_dispatcher_connect = (
+            lambda *a, **kw: (lambda: None)
+        )
+
+    const_mod = sys.modules.get("homeassistant.const")
+    if const_mod is not None and not hasattr(const_mod, "EntityCategory"):
+        const_mod.EntityCategory = _Enum("EntityCategory")
+
     cv = types.ModuleType("homeassistant.helpers.config_validation")
     cv.string = str
     cv.config_entry_only_config_schema = lambda _domain: lambda config: config
