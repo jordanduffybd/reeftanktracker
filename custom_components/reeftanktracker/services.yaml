@@ -417,6 +417,73 @@ remove_supplement_profile:
       selector:
         text:
 
+update_supplement_profile:
+  name: Update Supplement Profile
+  description: >
+    Update fields on an existing supplement profile in place. Pass
+    only the fields you want to change. Common use case: profiles
+    registered before per-element potency support (0.4.4 era) had
+    `eff_per_mL_per_100L` left blank — call this with that field
+    populated to make per-element advisors use it instead of the
+    built-in default. Built-in profiles cannot be updated.
+  fields:
+    id:
+      name: Profile ID
+      description: The slug-style id, e.g. quantum_reef_essential_hr_nitrate_remover_5l.
+      required: true
+      example: quantum_reef_essential_hr_nitrate_remover_5l
+      selector:
+        text:
+    eff_per_mL_per_100L:
+      name: Efficiency (signed; per parameter unit / mL / 100 L)
+      description: >
+        Per-element potency. Positive for additives (Ca, Mg), NEGATIVE
+        for removers (NO3, PO4 — e.g. -0.5 = 0.5 ppm NO3 reduction per
+        mL per 100 L). The advisor uses signed math, so the sign
+        encodes "raises" vs "removes" the parameter.
+      example: -0.5
+      selector:
+        number:
+          mode: box
+          min: -100.0
+          max: 100.0
+          step: 0.001
+    eff_dkh_per_mL_per_100L:
+      name: Efficiency (dKH per mL per 100 L) — KH supplements only
+      description: Update the alk-only potency on a KH supplement profile.
+      example: 0.083
+      selector:
+        number:
+          mode: box
+          min: -5.0
+          max: 5.0
+          step: 0.001
+    param_id:
+      name: Target parameter(s)
+      description: >
+        Reassign the supplement to a different parameter. String for
+        single-target, list for multi-target (e.g. NPX targeting both
+        nitrate AND phosphate).
+      example: "nitrate"
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options: [kh, calcium, magnesium, nitrate, phosphate, other]
+    label_patterns:
+      name: Label patterns (for auto-detect)
+      description: Replace the existing patterns list (case-insensitive substrings).
+      example: '["hr nitrate", "nitrate remover"]'
+      selector:
+        text:
+          multiple: true
+    notes:
+      name: Notes
+      description: Replace the free-form notes field.
+      selector:
+        text:
+          multiline: true
+
 list_supplement_profiles:
   name: List Supplement Profiles
   description: >
