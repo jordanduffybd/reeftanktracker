@@ -184,7 +184,7 @@
         },
         "data_description": {
           "advisor_nitrate_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses an NO3 remover (NPX, HR/LR Nitrate Remover). Multiple heads are summed.",
-          "advisor_nitrate_supplement_profile": "Pick a Nitrate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below.",
+          "advisor_nitrate_supplement_profile": "Pick a Nitrate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below. **Multi-supplement note:** if you dose BOTH NPX and a dedicated remover (HR/LR Nitrate Remover), the advisor models only ONE potency. Recommended workflow: pick the supplement you actively tune (usually the dedicated remover — faster response), configure both heads in 'Heads' so total dose tracks correctly, then apply recommendations to the dedicated remover head ONLY (leave NPX stable).",
           "advisor_nitrate_spec_efficiency": "**NEGATIVE for removers.** Default -0.5 ppm NO3 reduction per mL per 100L (rough NPX/HR-Nitrate average — bacterial response varies wildly with population size). Use 'Custom' and override here as you observe actual potency.",
           "advisor_nitrate_target_min": "Modern consensus 1 ppm. Below 0.5 ppm triggers dinoflagellates per BRStv 52 Weeks.",
           "advisor_nitrate_target_max": "Modern consensus 10 ppm. SPS-leaning target lower (5 ppm); LPS tolerates higher (up to 20 ppm).",
@@ -222,7 +222,7 @@
         },
         "data_description": {
           "advisor_phosphate_heads": "Pick the **`_daily_dose`** sensor for each RSDose head that doses a PO4 remover (Quantum AR, lanthanum solution, NPX). Multiple heads are summed.",
-          "advisor_phosphate_supplement_profile": "Pick a Phosphate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below.",
+          "advisor_phosphate_supplement_profile": "Pick a Phosphate-targeting remover profile registered via `add_supplement_profile`. Use 'Custom' to enter a manual potency below. **Multi-supplement note:** if you dose BOTH NPX (carbon-source PO4 reduction) and a lanthanum / GFO PO4 remover, the advisor models only ONE potency. Recommended workflow: pick the supplement you actively tune (usually the lanthanum / GFO — faster response), configure both heads in 'Heads' so total dose tracks correctly, then apply recommendations to the dedicated remover head ONLY (leave NPX stable).",
           "advisor_phosphate_spec_efficiency": "**NEGATIVE for removers.** Default -0.04 ppm PO4 reduction per mL per 100L (lanthanum stoichiometry). Override per your specific product as you observe actual potency.",
           "advisor_phosphate_target_min": "Modern consensus 0.03 ppm. Below 0.02 triggers dinoflagellates.",
           "advisor_phosphate_target_max": "Modern consensus 0.10 ppm. SPS prefers 0.03–0.06; LPS tolerates 0.05–0.10.",
