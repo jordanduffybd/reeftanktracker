@@ -132,7 +132,22 @@ def _install_ha_stubs() -> None:
     # the registered handler for synthetic state-change events.
     event.async_track_state_change_event = lambda hass, ids, cb: (lambda: None)
     event.async_track_time_change = lambda hass, cb, *, hour=0, minute=0, second=0: (lambda: None)
+    # async_call_later is used by the toast helper in __init__.py to
+    # schedule a delayed dismiss. The stub is a no-op — tests that
+    # exercise toast behaviour can monkeypatch this if needed.
+    event.async_call_later = lambda hass, delay, action: (lambda: None)
     sys.modules["homeassistant.helpers.event"] = event
+
+    # `homeassistant.util.dt` is used for ISO timestamp generation in
+    # the toast helper's notification_id. Stub utcnow() to return a
+    # fixed instant — tests don't need accurate time here.
+    util_pkg = types.ModuleType("homeassistant.util")
+    util_dt = types.ModuleType("homeassistant.util.dt")
+    from datetime import datetime, timezone as _tz
+    util_dt.utcnow = lambda: datetime.now(_tz.utc)
+    util_pkg.dt = util_dt
+    sys.modules["homeassistant.util"] = util_pkg
+    sys.modules["homeassistant.util.dt"] = util_dt
 
     cv = types.ModuleType("homeassistant.helpers.config_validation")
     cv.string = str

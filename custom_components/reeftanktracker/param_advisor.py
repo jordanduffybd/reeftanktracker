@@ -93,6 +93,14 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "default_eff_per_mL_per_100L": 2.0,
         # ppm — used in `Reason` strings.
         "value_unit": "ppm",
+        # Substring-match patterns (case-insensitive) used to
+        # auto-detect doser heads. The detector reads each RSDose
+        # head's `_supplement` sensor state and prefills this
+        # parameter's `heads` field with the matching head's
+        # `_daily_dose` entity. User can override on the Options page.
+        "head_label_patterns": [
+            "foundation a", "calcium", "ca plus", "ca+", "ca-up",
+        ],
     },
     "magnesium": {
         # Holmes-Farley: 1250–1350 ppm broadly. SPS-leaning prefer
@@ -121,6 +129,9 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # Foundation C: 1 mL per 100L raises Mg by 1 ppm.
         "default_eff_per_mL_per_100L": 1.0,
         "value_unit": "ppm",
+        "head_label_patterns": [
+            "foundation c", "magnesium", "mg plus", "mg+", "mg-up",
+        ],
     },
     "nitrate": {
         # Modern reef consensus (2018+): 1–10 ppm. The old "ULNS / 0
@@ -156,6 +167,13 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # algorithm computes). Stripping NO3 below 0.5 ppm is the
         # canonical dinoflagellate-outbreak setup per BRStv 52 Weeks.
         "floor_value": 0.5,
+        # NPX is multi-target (NO3 + PO4) so the same head appears
+        # in both NO3 and PO4 advisor prefills — fine, both should
+        # be configured identically anyway.
+        "head_label_patterns": [
+            "npx", "no3:po4-x", "no3po4x", "no3 po4 x",
+            "nitrate", "carbon dose",
+        ],
     },
     "phosphate": {
         # 0.03–0.10 ppm consensus. Below 0.02 ppm → dinoflagellate
@@ -185,6 +203,10 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # Floor: refuse increase when PO4 ≤ 0.03. Stripping below
         # this is dinoflagellate territory.
         "floor_value": 0.03,
+        "head_label_patterns": [
+            "phosphate", "ar phosphate", "lanthanum",
+            "npx", "no3:po4-x", "no3po4x", "no3 po4 x",
+        ],
     },
 }
 
@@ -227,6 +249,63 @@ def _read_float_state(hass: HomeAssistant, entity_id: str | None) -> float | Non
         return float(state.state)
     except (ValueError, TypeError):
         return None
+
+
+def detect_default_heads(
+    hass: HomeAssistant, param_id: str,
+) -> list[str]:
+    """Auto-detect doser heads for `param_id` by inspecting per-head
+    `_supplement` sensors and matching their state against this
+    parameter's `head_label_patterns`.
+
+    Reefbeat exposes one entity per RSDose head:
+      `sensor.rsdose4_<serial>_head_<N>_supplement`
+    whose state is the supplement label set in ReefBeat (e.g.
+    "Foundation A" or "NPX"). The corresponding daily-dose entity
+    sits at the same prefix with `_supplement` swapped for
+    `_daily_dose`. We discover heads by reading every
+    `*_supplement` sensor's state, substring-matching against this
+    param's patterns, and emitting the matching `_daily_dose`
+    entity_ids.
+
+    Returns an empty list when no patterns are configured for the
+    param or no head matches. Caller (config_flow) uses this to
+    pre-fill the `heads` field on the per-element advisor Options
+    page — user can override.
+
+    Generic across doser brands: any sensor with the
+    `_supplement` / `_daily_dose` naming pair is matched. Tested
+    against RSDose 4 in prod; should also work with future
+    Reefbeat dosers and any community-contributed integration that
+    follows the same convention.
+    """
+    patterns = PARAM_DEFAULTS.get(param_id, {}).get(
+        "head_label_patterns", [],
+    )
+    if not patterns:
+        return []
+    patterns_lower = [p.lower() for p in patterns]
+
+    matches: list[str] = []
+    seen: set[str] = set()
+    for state in hass.states.async_all("sensor"):
+        eid = state.entity_id
+        if not eid.endswith("_supplement"):
+            continue
+        label = (state.state or "").lower()
+        if not label or label in ("unknown", "unavailable", "none"):
+            continue
+        if not any(p in label for p in patterns_lower):
+            continue
+        dose_eid = eid[: -len("_supplement")] + "_daily_dose"
+        if dose_eid in seen:
+            continue
+        # Verify the daily-dose entity actually exists — guards
+        # against a stale supplement sensor whose head was removed.
+        if hass.states.get(dose_eid) is not None:
+            matches.append(dose_eid)
+            seen.add(dose_eid)
+    return matches
 
 
 def _sum_dose_mL(

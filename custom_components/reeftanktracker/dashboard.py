@@ -527,6 +527,23 @@ def _build_param_advisor_view(
         ),
     }
 
+    # Reading history graph — surfaces the actual `_latest` sensor
+    # values over the advisor's window so the user can SEE the trend
+    # the algorithm is reading. 90 days matches the default
+    # window_days for sparse-cadence params (Ca/Mg/NO3/PO4); the
+    # native HA history-graph just plots the points/line directly.
+    # No target-band overlay (history-graph doesn't support it
+    # natively); the band shows up in the show-your-work card below.
+    latest_eid = _eid(uid_map, f"reef_{param_id}_latest")
+    history_graph_card = {
+        "type": "history-graph",
+        "title": f"{title} readings (last 90 days, {unit})",
+        "hours_to_show": 24 * 90,
+        "entities": [
+            {"entity": latest_eid, "name": title},
+        ],
+    }
+
     # Activity log: filtered to this param's advisor sensor + the
     # KH Keeper calibration entities (unchanged across params — the
     # advisor surface is shared). Per-element ack/dismiss arrives in
@@ -553,6 +570,16 @@ def _build_param_advisor_view(
                      "heading": f"{title} dosing advisor",
                      "icon": "mdi:test-tube"},
                     headline_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading",
+                     "heading": f"{title} reading history",
+                     "icon": "mdi:chart-line"},
+                    history_graph_card,
                 ],
             },
             {
@@ -706,6 +733,18 @@ def _build_overview_view(uid_map: dict[str, str]) -> dict[str, Any]:
 def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
     """Alk dosing advisor — recommendation, controls, calculation details."""
     advisor_eid = _eid(uid_map, "reef_alk_advisor_recommendation")
+    kh_latest_eid = _eid(uid_map, "reef_kh_latest")
+    # Alk gets a 7-day window — the KH Keeper polls every ~12h so the
+    # graph shows daily drift clearly. Per-element advisors use 90
+    # days because their data is sparse manual readings.
+    kh_history_card = {
+        "type": "history-graph",
+        "title": "KH readings (last 7 days, dKH)",
+        "hours_to_show": 168,
+        "entities": [
+            {"entity": kh_latest_eid, "name": "KH"},
+        ],
+    }
 
     # Headline card. Two conditional variants stacked: a markdown
     # "advisor paused" banner when state is unknown/unavailable (e.g.
@@ -968,6 +1007,15 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                     {"type": "heading", "heading": "Alkalinity dosing advisor",
                      "icon": "mdi:test-tube"},
                     headline_card,
+                ],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [
+                    {"type": "heading", "heading": "KH reading history",
+                     "icon": "mdi:chart-line"},
+                    kh_history_card,
                 ],
             },
             {
