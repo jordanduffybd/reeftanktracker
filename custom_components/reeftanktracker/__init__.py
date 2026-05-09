@@ -16,6 +16,9 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -367,6 +370,93 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
+def _resolve_advisor_entity_id(
+    hass: HomeAssistant, advisor_unique_id: str,
+) -> str | None:
+    """Look up the advisor sensor's actual entity_id by unique_id.
+
+    Used to set `entity_id` on logbook events so they show up in
+    the dashboard logbook cards (which filter by entity_id).
+    """
+    registry = er.async_get(hass)
+    for entry in registry.entities.values():
+        if entry.platform == DOMAIN and entry.unique_id == advisor_unique_id:
+            return entry.entity_id
+    return None
+
+
+async def _show_action_feedback(
+    hass: HomeAssistant,
+    *,
+    title: str,
+    message: str,
+    advisor_unique_id: str | None = None,
+    notification_id_prefix: str = "reef_action",
+    toast_seconds: float = 10.0,
+) -> None:
+    """Two-fold feedback for dashboard actions:
+
+    1. Fire `logbook_entry` event with `entity_id` set to the advisor
+       sensor — surfaces the action in the dashboard's logbook card.
+       Without this, the logbook only catches state changes, so
+       acknowledge / dismiss / water-change / demand-change actions
+       (which mostly mutate attributes, not state) never appeared.
+
+    2. Create a `persistent_notification` and auto-dismiss it after
+       `toast_seconds` — gives the user a visible toast in the bell
+       icon dropdown that the action took effect, instead of
+       requiring them to read system logs.
+
+    `advisor_unique_id` defaults to the alk advisor sensor; pass a
+    different unique_id (e.g. `reef_calcium_advisor_recommendation`)
+    for per-element actions when those handlers exist.
+    """
+    eid = None
+    if advisor_unique_id is not None:
+        eid = _resolve_advisor_entity_id(hass, advisor_unique_id)
+
+    # 1. Logbook entry — populates the "Recent activity" card.
+    # The HA logbook component listens for the `logbook_entry`
+    # event and renders entries whose `entity_id` is in the card's
+    # entity filter.
+    payload: dict[str, Any] = {
+        "name": title,
+        "message": message,
+        "domain": DOMAIN,
+    }
+    if eid:
+        payload["entity_id"] = eid
+    hass.bus.async_fire("logbook_entry", payload)
+
+    # 2. Toast — auto-dismissing persistent notification.
+    notif_id = (
+        f"{notification_id_prefix}_"
+        f"{int(dt_util.utcnow().timestamp() * 1000)}"
+    )
+    await hass.services.async_call(
+        "persistent_notification", "create",
+        {
+            "notification_id": notif_id,
+            "title": title,
+            "message": message,
+        },
+        blocking=False,
+    )
+
+    async def _dismiss(_now: Any = None) -> None:
+        try:
+            await hass.services.async_call(
+                "persistent_notification", "dismiss",
+                {"notification_id": notif_id},
+                blocking=False,
+            )
+        except Exception:  # noqa: BLE001
+            # Notification may have been manually dismissed; not fatal.
+            pass
+
+    async_call_later(hass, toast_seconds, _dismiss)
+
+
 async def _async_register_services(
     hass: HomeAssistant, coordinator: ReefDataCoordinator
 ) -> None:
@@ -476,11 +566,30 @@ async def _async_register_services(
             "Acknowledged alk recommendation: applied=%s prev=%s",
             applied, prev,
         )
+        await _show_action_feedback(
+            hass,
+            title="Alk recommendation acknowledged",
+            message=(
+                f"Applied {applied:.2f} mL/day "
+                f"(was {float(prev) if prev is not None else 0.0:.2f}). "
+                f"Advisor enters cooldown."
+            ),
+            advisor_unique_id="reef_alk_advisor_recommendation",
+        )
 
     async def handle_dismiss_alk(call: ServiceCall) -> None:
+        suggested = float(call.data.get("suggested_value_mL", 0.0))
         await coordinator.async_record_advisor_dismissal(
-            "kh",
-            suggested_value_mL=float(call.data.get("suggested_value_mL", 0.0)),
+            "kh", suggested_value_mL=suggested,
+        )
+        await _show_action_feedback(
+            hass,
+            title="Alk recommendation dismissed",
+            message=(
+                f"Ignored suggested {suggested:.2f} mL/day. "
+                f"Advisor enters dismiss-cooldown."
+            ),
+            advisor_unique_id="reef_alk_advisor_recommendation",
         )
 
     async def handle_log_demand_change(call: ServiceCall) -> None:
@@ -622,6 +731,19 @@ async def _async_register_services(
             "Submitted water change from form: percent=%s salt_mix_kh=%s notes=%r",
             percent, salt, notes,
         )
+        salt_msg = (
+            f", salt mix KH {float(salt):.1f}" if salt is not None else ""
+        )
+        notes_msg = f" — {notes}" if notes else ""
+        await _show_action_feedback(
+            hass,
+            title="Water change logged",
+            message=(
+                f"{float(percent):.0f}% volume changed{salt_msg}{notes_msg}. "
+                f"Snapshots in the settling window will be excluded."
+            ),
+            advisor_unique_id="reef_alk_advisor_recommendation",
+        )
 
     async def handle_submit_demand_change_form(call: ServiceCall) -> None:
         """Read the demand-change form fields and call log_demand_change."""
@@ -647,6 +769,21 @@ async def _async_register_services(
         _LOGGER.warning(
             "Submitted demand change from form: reason=%r direction=%s magnitude=%s",
             reason, direction, magnitude,
+        )
+        mag_msg = (
+            f", ~{float(magnitude):.0f}% magnitude"
+            if magnitude is not None else ""
+        )
+        await _show_action_feedback(
+            hass,
+            title="Demand change logged",
+            message=(
+                f"{str(direction).capitalize()}{mag_msg}: {reason}. "
+                f"Advisor enters learning mode until "
+                f"{ADVISOR_DEFAULTS.get('min_samples_after_event', 3)} "
+                f"snapshots after now."
+            ),
+            advisor_unique_id="reef_alk_advisor_recommendation",
         )
 
     async def handle_submit_icp_import_form(call: ServiceCall) -> None:
@@ -694,6 +831,18 @@ async def _async_register_services(
             from homeassistant.exceptions import HomeAssistantError
             raise HomeAssistantError(str(exc)) from exc
         _LOGGER.warning("ICP form import: %s", summary)
+        # Toast the headline. The full plan rendering happens on the
+        # Dosing Plan view; the toast just confirms import succeeded.
+        await _show_action_feedback(
+            hass,
+            title="ICP test imported",
+            message=(
+                f"Habitat={habitat}, problem={problem}. "
+                f"View the new dose plan on the Dosing Plan dashboard."
+            ),
+            advisor_unique_id=None,  # not advisor-specific
+            notification_id_prefix="reef_icp",
+        )
 
     async def handle_capture_snapshot(call: ServiceCall) -> None:
         """Capture an alk advisor snapshot.
