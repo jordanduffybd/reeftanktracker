@@ -2,6 +2,40 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.6 — Configuration UI labels + descriptions + diagnostic sensors no longer show "unknown" when auto-source is live
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Configuration UI overhaul
+
+User feedback: the Options form fields displayed raw `advisor_window_days` style names with no help text, leaving non-experts guessing what each knob does.
+
+- **Alk advisor step**: previously had ZERO `data` / `data_description` coverage — every field showed its raw key. Now every field has a friendly label AND an explanatory description (22 fields total: enabled toggle, doser heads, KH source, calibration warning, tank volume, supplement profile, spec efficiency, target band, window/min_samples/min_trend_days/cooldown/dismiss_cooldown/step_cap/hysteresis/min_samples_after_event/correction_period_days/snapshot_hour/snapshot_minute/empirical_drift_pct/wc_settling_hours).
+- **Per-element advisor steps (Ca / Mg / NO3 / PO4)**: the 6-7 algorithm-tuning fields per page (cooldown, correction_period, dismiss_cooldown, enabled, min_samples, min_samples_after_event, min_trend_days, step_cap_pct) had labels but no descriptions. Filled in for all four pages with param-specific guidance (e.g. "Ca cooldown 30d matches monthly testing cadence", "NO3 cooldown 30d because bacterial response is slow").
+- Each description explains: what the knob controls, what the default is, when to change it, what the safety implication is.
+
+### Diagnostic sensors stop showing "unknown" for auto-sourced params
+
+User feedback: "a heap of entities in diagnostic show as unknown".
+
+Root cause: `_latest_method` and `_latest_at` only looked at recorded readings. So for a parameter with a live auto-source but no manual readings (e.g. KH if you haven't manually tested in a while), these sensors returned None → HA renders "unknown".
+
+Fix: `_latest_method` and `_latest_at` now mirror `_latest`'s freshness comparison (added in 0.5.5). When the live auto-source's `last_changed` is newer than any recorded reading:
+
+| Sensor | Before | After |
+|---|---|---|
+| `_latest` | "unknown" | `7.84` (auto-live value) |
+| `_latest_method` | "unknown" | "Auto-source live" |
+| `_latest_at` | "unknown" | auto state's `last_changed` |
+| `_days_since_test` | "unknown" | "unknown" (still — by design; counts MANUAL tests only) |
+| `_drift` | "unknown" | "unknown" (still — needs both fresh manual and auto) |
+
+Shared `_read_auto_source_changed_at` and `_auto_wins` helpers de-duplicate the resolution logic across all three sensors.
+
+### Tests
+
+5 new tests in `tests/test_latest_sensor.py` covering `_latest_method` and `_latest_at` auto-live fallback. Total suite: 173 passing (was 168).
+
 ## 0.5.5 — Latest sensor prefers live auto-source state when fresher than any recorded reading
 
 **Tested against:** HA Core `2026.4.4` (dev).
