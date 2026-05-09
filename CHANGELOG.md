@@ -2,6 +2,49 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.4 — UX enhancements that missed the 0.5.3 cutoff
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+Three improvements landed on the 0.5.3 feature branch AFTER PR #16 was already merged + released, so the original 0.5.3 release tag never picked them up. Bundling here so they actually ship to HACS users.
+
+### Auto-detect doser heads by supplement label
+
+Configure → "{Calcium / Magnesium / Nitrate / Phosphate} dosing advisor" pages now pre-fill the **Heads** field by reading each RSDose head's `_supplement` sensor and substring-matching the label against per-param patterns. Label "Foundation A" in ReefBeat → Calcium advisor opens with that head's `_daily_dose` already selected.
+
+| Param | Substring matches (case-insensitive) |
+|---|---|
+| Calcium | "foundation a", "calcium", "ca plus", "ca+", "ca-up" |
+| Magnesium | "foundation c", "magnesium", "mg plus", "mg+", "mg-up" |
+| Nitrate | "npx", "no3:po4-x", "no3po4x", "no3 po4 x", "nitrate", "carbon dose" |
+| Phosphate | "phosphate", "ar phosphate", "lanthanum", "npx", "no3:po4-x", "no3po4x", "no3 po4 x" |
+
+NPX is multi-target — same head shows up as a default in BOTH Nitrate and Phosphate pages. Detection works for any doser integration that follows the `_supplement`/`_daily_dose` naming pair.
+
+### Reading-history graph on every advisor view
+
+Each advisor view (Alk, Ca, Mg, NO3, PO4) now has a `history-graph` card between the headline tile and the show-your-work card. Per-element advisors show 90 days (matches the default rolling window for sparse manual testing); alk shows 7 days (KH Keeper polls every ~12h, daily drift visible).
+
+Existing users on 0.5.3 must call `reeftanktracker.regenerate_dashboard` after upgrade to surface the new graph.
+
+### Toast + logbook feedback for dashboard actions
+
+Two issues fixed:
+
+1. **No visual confirmation**: every dashboard action (acknowledge, dismiss, water-change form, demand-change form, ICP-import form) now creates a `persistent_notification` visible in the bell-icon dropdown with a clear title + detail, auto-dismissing after 10 seconds.
+
+2. **Actions invisible in activity log**: the dashboard's "Recent activity" logbook card filters by `entity_id` and only catches state changes by default. Each handler now ALSO fires a `logbook_entry` event with the advisor sensor's `entity_id` set, so the action is recorded in the dashboard's logbook card.
+
+Same payload across both surfaces. Skipped `record_reading` since it's high-frequency (Test Session entry batch) and `_latest` state changes already surface in logbooks.
+
+### Tests
+
+162 passing — same count as 0.5.3 (the 11 new tests for floor guard / Redfield / NO3+PO4 defaults + 8 new tests for auto-detect heads were already counted). conftest stubs widened to support the toast helper's `async_call_later` + `homeassistant.util.dt` imports.
+
+### Why a separate release
+
+The original 0.5.3 release was auto-cut at 09:18:25 UTC immediately after PR #16 merged. I pushed the three feature commits to the same branch AFTER that, expecting they'd land via the same PR — they didn't, because the PR was already merged. Bundling them as 0.5.4 ensures HACS users get them.
+
 ## 0.5.3 — Nitrate + Phosphate advisors with remover semantics, floor guard, and Redfield warning
 
 **Tested against:** HA Core `2026.4.4` (dev).
