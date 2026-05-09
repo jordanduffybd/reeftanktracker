@@ -183,43 +183,21 @@ class ReefLatestSensor(_ReefSensorBase):
         """
         latest = self._coordinator.latest_reading(self._param["id"])
         auto_src = self._coordinator.get_auto_source(self._param["id"])
-
-        auto_value: float | None = None
-        auto_at: datetime | None = None
-        if auto_src:
-            state = self.hass.states.get(auto_src)
-            if state and state.state not in (
-                "unknown", "unavailable", "none", "", None,
-            ):
-                try:
-                    auto_value = float(state.state)
-                    # `last_changed` is when the state VALUE last
-                    # changed (vs `last_updated` which fires on any
-                    # state-object refresh). When the auto-source has
-                    # a fresh non-stale value, last_changed reflects
-                    # that. For KH Keeper the underlying bridge
-                    # publishes only on test completion, so
-                    # last_changed = test time.
-                    auto_at = state.last_changed or state.last_updated
-                except (ValueError, TypeError):
-                    auto_value = None
-
+        auto_at = _read_auto_source_changed_at(self.hass, auto_src)
         precision = self._param.get("precision")
 
-        if latest is not None and auto_at is not None and auto_value is not None:
-            try:
-                latest_at = datetime.fromisoformat(latest["sample_taken_at"])
-                # Both have timestamps — prefer the newer.
-                if auto_at > latest_at:
-                    return _round(auto_value, precision), "auto-live"
-                return _round(latest["value"], precision), latest.get("source")
-            except (ValueError, TypeError):
-                pass
+        if _auto_wins(latest, auto_at):
+            # Re-read state to pull the value (helper only returned the
+            # timestamp). Cheap — same object via hass.states.get.
+            state = self.hass.states.get(auto_src) if auto_src else None
+            if state is not None:
+                try:
+                    return _round(float(state.state), precision), "auto-live"
+                except (ValueError, TypeError):
+                    pass
 
         if latest is not None:
             return _round(latest["value"], precision), latest.get("source")
-        if auto_value is not None:
-            return _round(auto_value, precision), "auto-live"
         return None, None
 
     @property
@@ -282,7 +260,13 @@ class ReefLatestSensor(_ReefSensorBase):
 
 
 class ReefLatestMethodSensor(_ReefSensorBase):
-    """The method used for the latest reading."""
+    """The method used for the latest reading.
+
+    Mirrors `ReefLatestSensor`'s freshness comparison: if a live
+    auto-source state is fresher than any recorded reading, this
+    reports 'Auto-source live' so the diagnostic view doesn't show
+    'unknown' just because no manual reading has been logged.
+    """
 
     def __init__(self, coordinator: ReefDataCoordinator, param: ParameterDef) -> None:
         super().__init__(coordinator, param, "latest_method", "Last Method")
@@ -291,6 +275,11 @@ class ReefLatestMethodSensor(_ReefSensorBase):
     @property
     def native_value(self) -> str | None:
         latest = self._coordinator.latest_reading(self._param["id"])
+        auto_src = self._coordinator.get_auto_source(self._param["id"])
+        auto_at = _read_auto_source_changed_at(self.hass, auto_src)
+        # Prefer live auto-source when newer than any recorded reading.
+        if _auto_wins(latest, auto_at):
+            return "Auto-source live"
         if not latest:
             return None
         method = latest.get("method")
@@ -300,7 +289,12 @@ class ReefLatestMethodSensor(_ReefSensorBase):
 
 
 class ReefLatestAtSensor(_ReefSensorBase):
-    """When the latest reading was sampled."""
+    """When the latest reading was sampled.
+
+    Mirrors `ReefLatestSensor`'s freshness comparison: when the live
+    auto-source state is fresher than any recorded reading, this
+    reports the auto-source's `last_changed` timestamp.
+    """
 
     def __init__(self, coordinator: ReefDataCoordinator, param: ParameterDef) -> None:
         super().__init__(coordinator, param, "latest_at", "Last Sampled")
@@ -310,12 +304,53 @@ class ReefLatestAtSensor(_ReefSensorBase):
     @property
     def native_value(self) -> datetime | None:
         latest = self._coordinator.latest_reading(self._param["id"])
+        auto_src = self._coordinator.get_auto_source(self._param["id"])
+        auto_at = _read_auto_source_changed_at(self.hass, auto_src)
+        if _auto_wins(latest, auto_at):
+            return auto_at
         if not latest:
             return None
         try:
             return datetime.fromisoformat(latest["sample_taken_at"])
         except ValueError:
             return None
+
+
+def _read_auto_source_changed_at(
+    hass: HomeAssistant | None, entity_id: str | None,
+) -> datetime | None:
+    """Return the auto-source state's `last_changed` (the timestamp
+    when its value last actually changed). None if entity is missing
+    or in an unusable state. Shared between latest / method / at
+    sensors so they all agree on the freshness comparison."""
+    if hass is None or not entity_id:
+        return None
+    state = hass.states.get(entity_id)
+    if state is None or state.state in (
+        "unknown", "unavailable", "none", "", None,
+    ):
+        return None
+    try:
+        float(state.state)
+    except (ValueError, TypeError):
+        return None
+    return state.last_changed or state.last_updated
+
+
+def _auto_wins(
+    latest: dict[str, Any] | None, auto_at: datetime | None,
+) -> bool:
+    """True when the live auto-source's last_changed beats the most
+    recent recorded reading's sample_taken_at."""
+    if auto_at is None:
+        return False
+    if latest is None:
+        return True
+    try:
+        latest_at = datetime.fromisoformat(latest["sample_taken_at"])
+    except (ValueError, TypeError, KeyError):
+        return True
+    return auto_at > latest_at
 
 
 class ReefDaysSinceSensor(_ReefSensorBase):

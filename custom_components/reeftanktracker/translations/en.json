@@ -35,7 +35,55 @@
       },
       "advisor": {
         "title": "Alk dosing advisor",
-        "description": "Configure the alkalinity dosing recommendation engine. Leave 'Enable advisor' off until your KH source is calibrated. The advisor reads daily snapshots of KH + the sum of programmed dose across the selected alk heads, then suggests a daily-dose change weekly. v1 is recommendation-only — never writes to your doser."
+        "description": "Configure the alkalinity dosing recommendation engine. **Recommendation-only** — never writes to your doser; you apply changes in ReefBeat manually. Leave 'Enable advisor' off until your KH source is calibrated (calibration warning binary_sensor will tell you). The advisor takes a snapshot once per day at the configured time, builds a rolling window of KH + dose history, and suggests a daily-dose change when the median drifts outside the target band. **First-time setup checklist:** (1) pick your KH source sensor, (2) pick the doser head sensors, (3) confirm tank volume, (4) pick supplement (or leave 'auto' for label-detect), (5) verify target band, (6) flip Enable on.",
+        "data": {
+          "advisor_enabled": "Enable advisor",
+          "advisor_alk_head_entity_ids": "Alk dose head sensors",
+          "advisor_kh_source": "KH source sensor",
+          "advisor_calibration_warning_entity": "Calibration warning binary_sensor",
+          "advisor_tank_volume_l": "Tank volume (litres)",
+          "advisor_supplement_profile": "Supplement profile",
+          "advisor_spec_efficiency_dkh_per_mL_per_100L": "Spec efficiency (dKH per mL per 100L)",
+          "advisor_target_min": "Target band low (dKH)",
+          "advisor_target_max": "Target band high (dKH)",
+          "advisor_window_days": "Rolling window length (days)",
+          "advisor_min_samples": "Minimum daily snapshots required",
+          "advisor_min_trend_days": "Consecutive out-of-band days before adjusting",
+          "advisor_cooldown_days": "Cooldown after acknowledging a change (days)",
+          "advisor_dismiss_cooldown_days": "Cooldown after dismissing a suggestion (days)",
+          "advisor_step_cap_pct": "Max dose change per recommendation (%)",
+          "advisor_hysteresis_dkh": "Hysteresis around target band (dKH)",
+          "advisor_min_samples_after_event": "Required snapshots after demand change",
+          "advisor_correction_period_days": "Spread the correction over (days)",
+          "advisor_snapshot_hour": "Daily snapshot hour (0-23, local time)",
+          "advisor_snapshot_minute": "Daily snapshot minute (0-59)",
+          "advisor_empirical_drift_pct": "Empirical-vs-spec drift warning (%)",
+          "advisor_wc_settling_hours": "Water-change settling window (hours)"
+        },
+        "data_description": {
+          "advisor_enabled": "Master switch. Off → advisor sensor is unavailable, no recommendations, but daily snapshots still capture so history accumulates. Turn on once your KH source is calibrated and you've tested for a few days.",
+          "advisor_alk_head_entity_ids": "Pick the **`_daily_dose`** sensor for each RSDose head dosing alkalinity (e.g. `sensor.rsdose4_SERIAL_head_N_daily_dose`). NOT `_auto_dosed_today` (today's actual dose) and NOT `_supplement` (the label). Multiple heads are summed.",
+          "advisor_kh_source": "The sensor whose state is your live KH reading. For KH Keeper users: `sensor.kh_keeper_kh`. The advisor takes one snapshot per day from this sensor.",
+          "advisor_calibration_warning_entity": "Optional `binary_sensor` that flags when your KH source needs recalibration (e.g. `binary_sensor.kh_keeper_calibration_due_warning`). When ON, the advisor drops confidence to 'low' and notes the warning in the reason text.",
+          "advisor_tank_volume_l": "Total water volume in litres. Used to scale the supplement's spec efficiency. Reefer 425 G2 actual water volume is ~425 L (the model name is a hint but verify with your sump fill level).",
+          "advisor_supplement_profile": "Pick a registered supplement profile (Foundation B, Tropic Marin Alkalinity Plus, or one you added via `add_supplement_profile`). 'auto' detects from the doser head's `_supplement` label. 'custom' uses the manual efficiency value below.",
+          "advisor_spec_efficiency_dkh_per_mL_per_100L": "Vendor-published potency. Foundation B = 0.1 dKH per mL per 100L. Used when 'Custom' is selected above, or as fallback when a profile has no stored potency. Once you've acknowledged a few dose changes, the advisor compares observed vs spec and warns if drift exceeds the threshold below.",
+          "advisor_target_min": "Lower edge of your KH target band. Default 8.5 dKH (modern reef consensus 8.5-9.0). LPS-tolerant tanks can run 7.5-8.0 to mimic NSW. Whatever you pick, **stability matters more than the number** — Holmes-Farley says don't whip alk by more than 1 dKH/day.",
+          "advisor_target_max": "Upper edge. Default 8.9 dKH. Above 11 dKH is dangerous (precipitation + tissue burn). Above 9.5 is fine for LPS but can cause SPS tip burn if Mg is low.",
+          "advisor_window_days": "How far back the algorithm looks when computing the median + slope. Default 7 days. Shorter (3-5) reacts faster to changes; longer (14+) smooths out noise. KH Keeper publishes every 6 hours so 7 days = ~28 snapshots.",
+          "advisor_min_samples": "Minimum daily snapshots required before the advisor will produce a recommendation. Default 5. Below this, the sensor reports `confidence: insufficient`. Increase if you don't trust your KH source's noise level.",
+          "advisor_min_trend_days": "How many consecutive days the median must be outside the target band before the advisor suggests a change. Default 3. Stops a single noisy reading from triggering action — must be a sustained trend.",
+          "advisor_cooldown_days": "After you click Acknowledge, the advisor waits this many days before suggesting another change. Default 5 days — gives the new dose time to actually move KH before the algorithm reacts. Increase if your tank responds slowly.",
+          "advisor_dismiss_cooldown_days": "After you click Dismiss (ignore the suggestion), wait this many days before re-suggesting. Default 2 days — short because dismissed recommendations might still be valid if conditions persist.",
+          "advisor_step_cap_pct": "Max change per recommendation, as % of current dose. Default 10%. Conservative — Holmes-Farley says don't change alk dose by more than 25% in one go to avoid swings. Raise to 15-20% only if you're tracking a slow-but-confirmed trend.",
+          "advisor_hysteresis_dkh": "Dead-zone around the target band (in dKH). Default 0.1 — within KH Keeper noise floor. The advisor won't suggest a change unless the median is at least this far OUTSIDE the band. Stops endless tiny adjustments around the boundary.",
+          "advisor_min_samples_after_event": "After you log a demand change (e.g. 'added 3 SPS frags'), the advisor enters learning mode and waits for this many post-event snapshots before resuming recommendations. Default 3. The old slope is no longer valid; we need fresh data.",
+          "advisor_correction_period_days": "When the algorithm computes a correction, it spreads the dose change over this many days rather than applying it all at once. Default 7. So a 0.7 dKH gap is corrected at 0.1 dKH/day rather than slamming the tank in one day. **This is the rate-of-change safety knob.**",
+          "advisor_snapshot_hour": "What hour of the day to capture the daily snapshot (0-23, local time). Default 23 (11 PM). Pick a time when KH is reliably stable — e.g. just before lights off, after the day's dosing has fully equilibrated.",
+          "advisor_snapshot_minute": "Minute past the hour for the daily snapshot. Default 55. Combined with hour=23 → 23:55 local time.",
+          "advisor_empirical_drift_pct": "When you acknowledge a dose change, the advisor estimates the supplement's actual potency from the before/after KH slope. If the observed value drifts more than this % from spec, you'll see `spec_drift_warning: true` and a note in the reason text. Default 50%. Lower (30%) for a tighter sanity check; higher (75%) if your tank's variance is high.",
+          "advisor_wc_settling_hours": "After you log a water change, snapshots taken within this many hours are excluded from the algorithm's slope/median calculation. Default 24h. Stops the dilution event from being misread as a consumption spike. The window itself isn't truncated — just the disturbed snapshots are skipped."
+        }
       },
       "advisor_calcium": {
         "title": "Calcium dosing advisor",
@@ -67,7 +115,13 @@
           "advisor_calcium_min_samples": "Default 2 readings. Below this, the advisor returns 'insufficient samples'. Bump higher if you test more often and want stronger signal before recommendations fire.",
           "advisor_calcium_cooldown_days": "Default 30 days (one monthly testing cycle) — gives one full cycle to see the effect of a dose change before the advisor suggests another.",
           "advisor_calcium_step_cap_pct": "Default 10% — conservative across reef types. Holmes-Farley: never raise Ca more than 25 ppm/day equivalent.",
-          "advisor_calcium_hysteresis": "Default 5 ppm — within typical test-kit noise (Salifert/Hanna ULR ±10–20 ppm). Catches real drifts without chasing kit jitter."
+          "advisor_calcium_hysteresis": "Default 5 ppm — within typical test-kit noise (Salifert/Hanna ULR ±10–20 ppm). Catches real drifts without chasing kit jitter.",
+          "advisor_calcium_enabled": "Master switch. Off → advisor sensor is unavailable. Turn on after you've registered Foundation A as a supplement profile and have a few Ca readings logged.",
+          "advisor_calcium_min_samples": "Minimum readings before the advisor will produce a recommendation. **Default 2** for sparse manual cadence — bump to 5+ if you have an auto-tester running daily readings.",
+          "advisor_calcium_min_trend_days": "Consecutive out-of-band readings before suggesting a change. **Default 2** — stops a single noisy reading from triggering action; needs at least one confirming reading.",
+          "advisor_calcium_dismiss_cooldown_days": "After you click Dismiss, wait this many days before re-suggesting. **Default 14 days**. Shorter than the acknowledge cooldown because dismissed suggestions might still be valid if conditions persist.",
+          "advisor_calcium_min_samples_after_event": "After you log a demand change (e.g. 'added 3 SPS frags'), the advisor enters learning mode and waits for this many post-event readings before resuming. **Default 1** — at sparse cadence, waiting for 3 readings would mean 3 months of silence.",
+          "advisor_calcium_correction_period_days": "Spreads the correction over this many days rather than slamming it in one go. **Default 30 days** — gentle daily dose changes appropriate for the slow-feedback manual-test loop. **This is the rate-of-change safety knob.**"
         }
       },
       "advisor_magnesium": {
@@ -97,7 +151,15 @@
           "advisor_magnesium_target_min": "SPS-friendly default 1300 ppm. Natural seawater ~1280; LPS tolerant down to 1200.",
           "advisor_magnesium_target_max": "SPS-friendly default 1350 ppm.",
           "advisor_magnesium_window_days": "How far back the algorithm looks. **Default 90 days** for sparse monthly testing.",
-          "advisor_magnesium_hysteresis": "Default 20 ppm — within typical Mg test-kit noise (kits read in coarser units than Ca, ±20-30 ppm common). Catches real drifts without chasing kit jitter."
+          "advisor_magnesium_hysteresis": "Default 20 ppm — within typical Mg test-kit noise (kits read in coarser units than Ca, ±20-30 ppm common). Catches real drifts without chasing kit jitter.",
+          "advisor_magnesium_enabled": "Master switch. Off → advisor sensor is unavailable. Mg moves slowly so even partial config + manual testing is fine to leave on.",
+          "advisor_magnesium_min_samples": "**Default 2** for sparse cadence. Mg is forgiving — even 2 readings spaced weeks apart show a useful trend.",
+          "advisor_magnesium_min_trend_days": "**Default 2** consecutive out-of-band readings before adjusting.",
+          "advisor_magnesium_cooldown_days": "**Default 30 days** — Mg moves slowly. Wait for the next monthly test to see if the dose change worked before suggesting another.",
+          "advisor_magnesium_dismiss_cooldown_days": "**Default 14 days**. Mg dismissals are easier to justify since Mg drifts slowly — short cooldown lets the advisor re-suggest if the trend persists.",
+          "advisor_magnesium_step_cap_pct": "**Default 10%** — same conservative cap as Ca/alk. Mg overshoots are more forgiving but the cap protects against pump miscalibration.",
+          "advisor_magnesium_min_samples_after_event": "**Default 1** post-event reading. Mg-affecting events are rare (water change, large salt batch swap) — usually one fresh reading is enough to confirm the new baseline.",
+          "advisor_magnesium_correction_period_days": "**Default 30 days** — Mg corrections want gentle nudges. Tank can sit at 1280 ppm safely while you ramp toward 1320."
         }
       },
       "advisor_nitrate": {
@@ -128,7 +190,14 @@
           "advisor_nitrate_target_max": "Modern consensus 10 ppm. SPS-leaning target lower (5 ppm); LPS tolerates higher (up to 20 ppm).",
           "advisor_nitrate_window_days": "**Default 90 days** for sparse monthly testing. Carbon-dose response is non-linear; longer window smooths bacterial-population variance.",
           "advisor_nitrate_step_cap_pct": "Default 10% — conservative because remover potency varies with bacterial population. Big jumps risk overshooting and bottoming out NO3.",
-          "advisor_nitrate_hysteresis": "Default 0.5 ppm — within Salifert NO3 test-kit precision."
+          "advisor_nitrate_hysteresis": "Default 0.5 ppm — within Salifert NO3 test-kit precision.",
+          "advisor_nitrate_enabled": "Master switch. Off → advisor sensor is unavailable. **Watch the floor guard** — if NO3 ≤ 0.5 ppm the advisor refuses to recommend more removal.",
+          "advisor_nitrate_min_samples": "**Default 2** for sparse cadence — NO3 readings monthly is common.",
+          "advisor_nitrate_min_trend_days": "**Default 2** consecutive readings outside band before adjusting.",
+          "advisor_nitrate_cooldown_days": "**Default 30 days** — bacterial response to carbon-source changes is slow (population needs 2-4 weeks to adapt). Don't recompute faster than that.",
+          "advisor_nitrate_dismiss_cooldown_days": "**Default 14 days**.",
+          "advisor_nitrate_min_samples_after_event": "**Default 1** post-event reading. Demand-change events for NO3 = stocking changes (more fish → more NO3 production) or feeding changes.",
+          "advisor_nitrate_correction_period_days": "**Default 30 days** — long correction period because remover potency varies. Spread the recovery so an overestimate doesn't strip NO3 below the floor."
         }
       },
       "advisor_phosphate": {
@@ -158,7 +227,15 @@
           "advisor_phosphate_target_min": "Modern consensus 0.03 ppm. Below 0.02 triggers dinoflagellates.",
           "advisor_phosphate_target_max": "Modern consensus 0.10 ppm. SPS prefers 0.03–0.06; LPS tolerates 0.05–0.10.",
           "advisor_phosphate_step_cap_pct": "Default 10% — conservative. Lanthanum overdosing strips PO4 fast and can shock corals.",
-          "advisor_phosphate_hysteresis": "Default 0.01 ppm — within Hanna ULR PO4 precision."
+          "advisor_phosphate_hysteresis": "Default 0.01 ppm — within Hanna ULR PO4 precision.",
+          "advisor_phosphate_enabled": "Master switch. **Watch the floor guard** — if PO4 ≤ 0.03 ppm the advisor refuses to recommend more removal (dinoflagellate prevention).",
+          "advisor_phosphate_min_samples": "**Default 2** — Hanna ULR PO4 readings monthly is typical.",
+          "advisor_phosphate_min_trend_days": "**Default 2** consecutive out-of-band readings before adjusting.",
+          "advisor_phosphate_cooldown_days": "**Default 30 days** — lanthanum / GFO response is fast (hours-days), but the recommendation cycle should match testing cadence.",
+          "advisor_phosphate_dismiss_cooldown_days": "**Default 14 days**.",
+          "advisor_phosphate_window_days": "How far back the algorithm looks. **Default 90 days** for sparse monthly testing.",
+          "advisor_phosphate_min_samples_after_event": "**Default 1** post-event reading. PO4 demand-change events = stocking, food-bio source changes, lanthanum recharge.",
+          "advisor_phosphate_correction_period_days": "**Default 30 days** — gentle ramping. Stripping PO4 hard with lanthanum can shock corals; conservative correction period keeps the rate of change low."
         }
       }
     }
