@@ -649,3 +649,130 @@ def test_redfield_skipped_when_no_snapshots():
     out = param_advisor._apply_safety_guards(coord, "nitrate", rec)
     assert out.redfield_ratio is None
     assert out.redfield_warning is False
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect doser heads (0.5.3) — match supplement label against
+# per-param patterns, return the matching `_daily_dose` entity_ids.
+# ---------------------------------------------------------------------------
+def _make_hass_with_supplements(supplements: dict[str, str]):
+    """Stub hass where `states.async_all('sensor')` returns one State
+    per `_supplement` entity, and `states.get(<eid>)` returns the
+    matching daily-dose / supplement state. `supplements` maps the
+    `_supplement` entity_id to its label."""
+    hass = MagicMock()
+
+    # One MagicMock state per supplement entity
+    state_objs = []
+    state_lookup = {}
+    for supp_eid, label in supplements.items():
+        s = MagicMock()
+        s.entity_id = supp_eid
+        s.state = label
+        state_objs.append(s)
+        state_lookup[supp_eid] = s
+        # Daily-dose companion exists if label is non-empty
+        dose_eid = supp_eid[: -len("_supplement")] + "_daily_dose"
+        d = MagicMock()
+        d.entity_id = dose_eid
+        d.state = "5.0"
+        state_lookup[dose_eid] = d
+
+    hass.states.async_all.side_effect = (
+        lambda domain=None: list(state_objs)
+    )
+    hass.states.get.side_effect = lambda eid: state_lookup.get(eid)
+    return hass
+
+
+def test_detect_default_heads_calcium_matches_foundation_a():
+    """Head with supplement='Foundation A' → daily_dose eid prefills
+    Calcium advisor's heads field."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "Foundation A",
+        "sensor.rsdose4_abc_head_2_supplement": "Foundation B",
+        "sensor.rsdose4_abc_head_3_supplement": "Foundation C",
+    })
+    matches = param_advisor.detect_default_heads(hass, "calcium")
+    assert matches == ["sensor.rsdose4_abc_head_1_daily_dose"]
+
+
+def test_detect_default_heads_magnesium_matches_foundation_c():
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "Foundation A",
+        "sensor.rsdose4_abc_head_2_supplement": "Foundation B",
+        "sensor.rsdose4_abc_head_3_supplement": "Foundation C",
+    })
+    matches = param_advisor.detect_default_heads(hass, "magnesium")
+    assert matches == ["sensor.rsdose4_abc_head_3_daily_dose"]
+
+
+def test_detect_default_heads_npx_matches_both_no3_and_po4():
+    """NPX is multi-target — should appear as a default in both
+    the nitrate and phosphate advisor pages."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_4_supplement": "NPX",
+    })
+    no3 = param_advisor.detect_default_heads(hass, "nitrate")
+    po4 = param_advisor.detect_default_heads(hass, "phosphate")
+    assert no3 == ["sensor.rsdose4_abc_head_4_daily_dose"]
+    assert po4 == ["sensor.rsdose4_abc_head_4_daily_dose"]
+
+
+def test_detect_default_heads_multiple_calcium_heads():
+    """Two Foundation A heads → both daily_dose eids returned."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "Foundation A",
+        "sensor.rsdose4_xyz_head_2_supplement": "Foundation A",
+    })
+    matches = param_advisor.detect_default_heads(hass, "calcium")
+    assert sorted(matches) == [
+        "sensor.rsdose4_abc_head_1_daily_dose",
+        "sensor.rsdose4_xyz_head_2_daily_dose",
+    ]
+
+
+def test_detect_default_heads_no_match():
+    """Head with an unrelated supplement (alk-only Foundation B) →
+    Calcium advisor gets no prefill."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_2_supplement": "Foundation B",
+    })
+    assert param_advisor.detect_default_heads(hass, "calcium") == []
+
+
+def test_detect_default_heads_skips_unknown_state():
+    """Head whose supplement sensor is 'unknown' (e.g. doser offline)
+    should be skipped silently, not match patterns."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "unknown",
+        "sensor.rsdose4_abc_head_2_supplement": "Foundation A",
+    })
+    matches = param_advisor.detect_default_heads(hass, "calcium")
+    assert matches == ["sensor.rsdose4_abc_head_2_daily_dose"]
+
+
+def test_detect_default_heads_unknown_param_returns_empty():
+    """Param without a `head_label_patterns` key (e.g. 'kh' uses the
+    alk advisor's own resolution) → empty list, no crash."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "Foundation A",
+    })
+    assert param_advisor.detect_default_heads(hass, "kh") == []
+    assert param_advisor.detect_default_heads(hass, "salinity") == []
+
+
+def test_detect_default_heads_case_insensitive():
+    """Match should be case-insensitive: 'NPX', 'npx', 'Npx' all
+    match the nitrate pattern 'npx'."""
+    hass = _make_hass_with_supplements({
+        "sensor.rsdose4_abc_head_1_supplement": "NPX",
+        "sensor.rsdose4_xyz_head_2_supplement": "npx",
+        "sensor.rsdose4_qrs_head_3_supplement": "Npx Reef",
+    })
+    matches = param_advisor.detect_default_heads(hass, "nitrate")
+    assert sorted(matches) == [
+        "sensor.rsdose4_abc_head_1_daily_dose",
+        "sensor.rsdose4_qrs_head_3_daily_dose",
+        "sensor.rsdose4_xyz_head_2_daily_dose",
+    ]
