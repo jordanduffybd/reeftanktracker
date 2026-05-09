@@ -2,6 +2,39 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.7 — `update_supplement_profile` service for fixing 0.4.4-era profiles in place
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Why
+
+User registered NO3 / PO4 supplement profiles back in 0.4.4 era, before per-element potency support existed. The advisor surfaces:
+
+> Spec efficiency source: default (Quantum Reef Essential HR Nitrate Remover (5L) has no potency; using built-in)
+
+This is correct (algorithm uses the param-built-in default of −0.5 ppm/mL/100L for NO3, −0.04 for PO4) but sounds alarming and clutters the diagnostic surface.
+
+Previous fix path: remove + re-add via two service calls. Annoying for the user, easy to mess up the slug.
+
+### `update_supplement_profile`
+
+New service. Sentinel-style: only the fields you pass change. Built-ins can't be updated.
+
+```yaml
+service: reeftanktracker.update_supplement_profile
+data:
+  id: quantum_reef_essential_hr_nitrate_remover_5l
+  eff_per_mL_per_100L: -0.5
+```
+
+Done — profile keeps its slug, dropdown selection stays valid, advisor recomputes immediately on next snapshot. The "Spec efficiency source" attribute flips from "default ... has no potency; using built-in" to "profile: Quantum Reef Essential HR Nitrate Remover (5L)".
+
+Fields: `eff_per_mL_per_100L`, `eff_dkh_per_mL_per_100L`, `param_id`, `label_patterns`, `notes`. Pass an explicit `None` to clear; omit entirely to leave unchanged. The sentinel pattern in `coordinator.async_update_supplement_profile` handles the distinction.
+
+### Tests
+
+4 new tests in `tests/test_coordinator.py` covering: update_eff_per_mL, only_passed_fields preserved, explicit-None clears, unknown_id raises ValueError. Total suite: **177 passing** (was 173).
+
 ## 0.5.6 — Configuration UI labels + descriptions + diagnostic sensors no longer show "unknown" when auto-source is live
 
 **Tested against:** HA Core `2026.4.4` (dev).

@@ -338,6 +338,83 @@ async def test_supplement_profile_slug_collision_with_existing_user(hass):
 
 
 @pytest.mark.asyncio
+async def test_supplement_profile_update_eff_per_mL(hass):
+    """Use case: profile registered in 0.4.4 era without
+    eff_per_mL_per_100L; we now add the per-element potency in place."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    # Pre-state: profile registered without per-element potency.
+    await coord.async_add_supplement_profile(
+        label="Quantum HR Nitrate Remover (5L)",
+        param_id="nitrate",
+        # No eff_per_mL_per_100L — simulating 0.4.4 registration.
+    )
+    pid = coord.supplement_profiles[0]["id"]
+    assert coord.supplement_profiles[0]["eff_per_mL_per_100L"] is None
+
+    # Update in place.
+    updated = await coord.async_update_supplement_profile(
+        pid, eff_per_mL_per_100L=-0.5,
+    )
+    assert updated["eff_per_mL_per_100L"] == -0.5
+    # Other fields unchanged.
+    assert updated["label"] == "Quantum HR Nitrate Remover (5L)"
+    assert updated["param_id"] == ["nitrate"]
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_update_only_passed_fields(hass):
+    """Sentinel pattern: fields not passed must remain unchanged.
+    Distinguishes "leave alone" from "explicitly clear to None"."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    await coord.async_add_supplement_profile(
+        label="X", param_id="kh", eff_dkh_per_mL_per_100L=0.1,
+        label_patterns=["x_label"], notes="initial",
+    )
+    pid = coord.supplement_profiles[0]["id"]
+
+    # Update only notes — other fields must be untouched.
+    updated = await coord.async_update_supplement_profile(
+        pid, notes="updated",
+    )
+    assert updated["notes"] == "updated"
+    assert updated["label_patterns"] == ["x_label"]
+    assert updated["eff_dkh_per_mL_per_100L"] == 0.1
+    assert updated["param_id"] == ["kh"]
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_update_clear_field_to_none(hass):
+    """Explicitly passing None must CLEAR the field (vs sentinel which
+    leaves it). Tests the _UNSET / explicit-None distinction."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    await coord.async_add_supplement_profile(
+        label="X", param_id="kh", eff_dkh_per_mL_per_100L=0.1,
+        notes="initial",
+    )
+    pid = coord.supplement_profiles[0]["id"]
+
+    updated = await coord.async_update_supplement_profile(
+        pid, notes=None,
+    )
+    assert updated["notes"] is None
+    # Other fields still untouched.
+    assert updated["eff_dkh_per_mL_per_100L"] == 0.1
+
+
+@pytest.mark.asyncio
+async def test_supplement_profile_update_unknown_id_raises(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    with pytest.raises(ValueError):
+        await coord.async_update_supplement_profile(
+            "nonexistent", eff_per_mL_per_100L=0.5,
+        )
+
+
+@pytest.mark.asyncio
 async def test_supplement_profile_round_trip(hass):
     coord1 = ReefDataCoordinator(hass)
     await coord1.async_load()

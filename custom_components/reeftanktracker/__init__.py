@@ -35,6 +35,7 @@ from .const import (
     SERVICE_RECORD_READING,
     SERVICE_REMOVE_INVENTORY,
     SERVICE_REMOVE_SUPPLEMENT_PROFILE,
+    SERVICE_UPDATE_SUPPLEMENT_PROFILE,
     SERVICE_SET_HABITAT,
     SERVICE_SUBMIT_DEMAND_FORM,
     SERVICE_SUBMIT_ICP_FORM,
@@ -207,6 +208,27 @@ REMOVE_SUPPLEMENT_PROFILE_SCHEMA = vol.Schema({
     vol.Required("id"): cv.string,
 })
 
+# Update accepts the same shape as Add minus `label` (id can't change),
+# and every field other than `id` is optional. Sentinel-style updates
+# (only-pass-the-fields-you-want-to-change) are handled in
+# coordinator.async_update_supplement_profile via the _UNSET pattern.
+UPDATE_SUPPLEMENT_PROFILE_SCHEMA = vol.Schema({
+    vol.Required("id"): cv.string,
+    vol.Optional("eff_dkh_per_mL_per_100L"): vol.All(
+        vol.Coerce(float), vol.Range(min=-5.0, max=5.0),
+    ),
+    vol.Optional("eff_per_mL_per_100L"): vol.All(
+        vol.Coerce(float), vol.Range(min=-100.0, max=100.0),
+    ),
+    vol.Optional("param_id"): vol.Any(
+        cv.string, vol.All(cv.ensure_list, [cv.string]),
+    ),
+    vol.Optional("label_patterns"): vol.All(
+        cv.ensure_list, [cv.string],
+    ),
+    vol.Optional("notes"): cv.string,
+})
+
 LOG_WATER_CHANGE_SCHEMA = vol.Schema({
     vol.Optional("parameter", default="kh"): cv.string,
     vol.Required("percent"): vol.All(
@@ -358,6 +380,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_LOG_DEMAND_CHANGE,
                 SERVICE_ADD_SUPPLEMENT_PROFILE,
                 SERVICE_REMOVE_SUPPLEMENT_PROFILE,
+                SERVICE_UPDATE_SUPPLEMENT_PROFILE,
                 SERVICE_LIST_SUPPLEMENT_PROFILES,
                 SERVICE_LOG_WATER_CHANGE,
                 SERVICE_CAPTURE_SNAPSHOT,
@@ -620,6 +643,58 @@ async def _async_register_services(
 
     async def handle_remove_supplement_profile(call: ServiceCall) -> None:
         await coordinator.async_remove_supplement_profile(call.data["id"])
+
+    async def handle_update_supplement_profile(call: ServiceCall) -> None:
+        """Update fields on an existing supplement profile in place.
+
+        Sentinel-style: only the fields you pass change. Existing
+        fields not mentioned are preserved. Use case: profiles
+        registered before per-element potency support (0.4.4 era)
+        can have `eff_per_mL_per_100L` filled in without
+        remove + re-add. The coordinator's _UNSET sentinel handles
+        the missing-kwarg case automatically; this handler just
+        passes through whichever kwargs the caller specified."""
+        kwargs: dict[str, Any] = {}
+        if "eff_dkh_per_mL_per_100L" in call.data:
+            kwargs["eff_dkh_per_mL_per_100L"] = call.data["eff_dkh_per_mL_per_100L"]
+        if "eff_per_mL_per_100L" in call.data:
+            kwargs["eff_per_mL_per_100L"] = call.data["eff_per_mL_per_100L"]
+        if "param_id" in call.data:
+            kwargs["param_id"] = call.data["param_id"]
+        if "label_patterns" in call.data:
+            kwargs["label_patterns"] = call.data["label_patterns"]
+        if "notes" in call.data:
+            kwargs["notes"] = call.data["notes"]
+        if not kwargs:
+            _LOGGER.warning(
+                "update_supplement_profile called with id=%s but no "
+                "fields to update — pass at least one of "
+                "eff_per_mL_per_100L / eff_dkh_per_mL_per_100L / "
+                "param_id / label_patterns / notes",
+                call.data["id"],
+            )
+            return
+        try:
+            entry = await coordinator.async_update_supplement_profile(
+                call.data["id"], **kwargs,
+            )
+        except ValueError as exc:
+            from homeassistant.exceptions import HomeAssistantError
+            raise HomeAssistantError(str(exc)) from exc
+        _LOGGER.warning(
+            "Updated supplement profile id=%s label=%r — applied: %s",
+            entry["id"], entry["label"], list(kwargs),
+        )
+        await _show_action_feedback(
+            hass,
+            title="Supplement profile updated",
+            message=(
+                f"{entry['label']}: {', '.join(kwargs)} updated. "
+                f"Per-element advisor will recompute on next snapshot."
+            ),
+            advisor_unique_id=None,
+            notification_id_prefix="reef_supp_update",
+        )
         _LOGGER.warning("Removed supplement profile id=%s", call.data["id"])
 
     async def handle_list_supplement_profiles(call: ServiceCall) -> None:
@@ -935,6 +1010,11 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_REMOVE_SUPPLEMENT_PROFILE, handle_remove_supplement_profile,
             schema=REMOVE_SUPPLEMENT_PROFILE_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_UPDATE_SUPPLEMENT_PROFILE,
+            handle_update_supplement_profile,
+            schema=UPDATE_SUPPLEMENT_PROFILE_SCHEMA,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_LIST_SUPPLEMENT_PROFILES, handle_list_supplement_profiles,
