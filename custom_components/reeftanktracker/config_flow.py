@@ -550,6 +550,19 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             elif setting in defaults:
                 suggested[k] = defaults[setting]
 
+        # Auto-detect doser heads when the user hasn't picked any
+        # yet. Reads each RSDose head's supplement label (the
+        # `*_supplement` sensor) and prefills the heads field with
+        # `*_daily_dose` entities whose head matches this param's
+        # `head_label_patterns`. User can override.
+        heads_key = _opt_key("heads")
+        if heads_key not in opts:
+            detected = param_advisor.detect_default_heads(
+                self.hass, param_id,
+            )
+            if detected:
+                suggested[heads_key] = detected
+
         schema = self.add_suggested_values_to_schema(
             vol.Schema(schema_dict), suggested,
         )

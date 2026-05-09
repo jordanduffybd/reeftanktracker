@@ -56,9 +56,30 @@ A primary-supplement designation + automatic head-allocation logic is deferred �
 - NO3: `[-50.0, +50.0]` ppm/mL/100L (signed; positive only relevant for ULNS-recovery NO3 dosing)
 - PO4: `[-10.0, +10.0]` ppm/mL/100L
 
+### Auto-detect doser heads by supplement label
+
+The Configure → "{Param} dosing advisor" pages now pre-fill the **Heads** field by reading each RSDose head's `_supplement` sensor and substring-matching the label against per-param patterns. So if you've labeled head 1 "Foundation A" in ReefBeat, the Calcium advisor page opens with that head's `_daily_dose` already selected — no manual picking required.
+
+Patterns per param:
+
+| Param | Substring matches (case-insensitive) |
+|---|---|
+| Calcium | "foundation a", "calcium", "ca plus", "ca+", "ca-up" |
+| Magnesium | "foundation c", "magnesium", "mg plus", "mg+", "mg-up" |
+| Nitrate | "npx", "no3:po4-x", "no3po4x", "no3 po4 x", "nitrate", "carbon dose" |
+| Phosphate | "phosphate", "ar phosphate", "lanthanum", "npx", "no3:po4-x", "no3po4x", "no3 po4 x" |
+
+NPX is multi-target — the same head shows up as a default in both NO3 and PO4 pages. User can override either side. Detection is generic: any sensor with `_supplement`/`_daily_dose` naming pair (not just RSDose) will match.
+
 ### Tests
 
-`tests/test_param_advisor.py` adds 6 new tests for the floor guard, Redfield warning, and signed-eff math. Total advisor test count: ~22 (was 17 in 0.5.2).
+`tests/test_param_advisor.py` adds 14 new tests (was 17 in 0.5.2; now 36):
+- 2 NO3/PO4 defaults
+- 5 floor guard scenarios
+- 4 Redfield warning scenarios
+- 8 doser-head auto-detect scenarios (Foundation A/C, NPX multi-target, multiple heads, no-match, unknown state, unknown param, case-insensitive)
+
+Total suite: 162 passing.
 
 ### Deferred to 0.5.4+
 
