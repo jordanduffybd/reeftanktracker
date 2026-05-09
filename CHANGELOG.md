@@ -2,6 +2,41 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.5 — Latest sensor prefers live auto-source state when fresher than any recorded reading
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Bug fix: stale recorded reading dominated the latest sensor
+
+Reported: KH Keeper sensor reading 7.84 (today's test), `sensor.reef_tank_kh_latest` showing 7.6 (older manual reading).
+
+Root cause was a two-fold compounding:
+
+1. **Auto-source listener throttle**: when an upstream sensor publishes the same value across consecutive measurements (e.g. KH Keeper holds 7.84 across two 6-hourly cycles), the listener's "significance threshold" filter (≥ `step` change required) skips recording. So no fresh recorded entry is created to bump the timestamp.
+
+2. **Latest-sensor logic**: `ReefLatestSensor.native_value` always returned the most recent recorded reading when one existed, ignoring the live auto-source state entirely. So a manual reading from 2 days ago beat a stale auto record at 7.84 from days earlier — even though KH Keeper was reporting 7.84 right now.
+
+Combined: a manual reading taken AFTER the last auto-record dominates forever, because no subsequent auto-record gets created to push past it.
+
+### Fix
+
+`ReefLatestSensor` now compares `latest_reading.sample_taken_at` against the live auto-source's `state.last_changed` and returns whichever is newer. New `source` value `auto-live` flags when the live state won.
+
+Behaviour matrix:
+
+| Recorded reading age | Auto-source `last_changed` age | Result |
+|---|---|---|
+| 2 days ago | 2 hours ago | **auto-live wins** (was: recorded won) |
+| 2 hours ago | 3 days ago | recorded wins (unchanged) |
+| none recorded | any | live auto wins (unchanged) |
+| 2 days ago | auto unavailable | recorded wins (unchanged) |
+
+The auto-source listener's significance-threshold filter is left alone — it correctly suppresses noise from high-frequency probes. The latest-sensor comparison handles the staleness from the freshness side instead.
+
+### Tests
+
+`tests/test_latest_sensor.py` — 6 new tests covering the resolution matrix. Total suite: 168 passing (was 162). conftest stubs widened to mock `homeassistant.components.sensor` + `device_registry` + `entity_platform` for sensor-module imports.
+
 ## 0.5.4 — UX enhancements that missed the 0.5.3 cutoff
 
 **Tested against:** HA Core `2026.4.4` (dev).
