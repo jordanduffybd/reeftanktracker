@@ -2,6 +2,36 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.8 — Acknowledge / Dismiss buttons on per-element advisor dashboards
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Why
+
+When the per-element advisor dashboard views (Calcium / Magnesium / Nitrate / Phosphate) shipped in 0.5.2, action buttons were deferred. The per-element views had no way to acknowledge or dismiss recommendations — the only path was to manually call `acknowledge_alk_recommendation` from Developer Tools (which only worked for alk anyway). 0.5.8 fills the gap.
+
+### What
+
+Two new generic services + dashboard buttons on every per-element advisor view.
+
+**Services:**
+- `reeftanktracker.acknowledge_advisor` — accepts a `parameter` field (`kh` / `calcium` / `magnesium` / `nitrate` / `phosphate`), plus optional `applied_value_mL` / `prev_value_mL` inferred from the current recommendation + live doser-head sum
+- `reeftanktracker.dismiss_advisor` — accepts a `parameter` field, plus optional `suggested_value_mL`
+
+The alk-specific `acknowledge_alk_recommendation` / `dismiss_alk_recommendation` services stay registered for back-compat. New dashboards (per-element views) use the generic ones.
+
+**Dashboard buttons:** Each per-element advisor view now has an Actions card with two `call-service` rows that invoke the generic services with `parameter: <param_id>` pre-filled. Same shape as the alk advisor view's Actions card. No-payload click → handler infers the right values.
+
+**Toast + logbook feedback:** Reuses the existing `_show_action_feedback` helper. Per-param sensor unique_id (`reef_<param>_advisor_recommendation`) is resolved from the registry so the logbook entry surfaces in the per-element view's Activity log card.
+
+### Tests
+
+177 passing — same count as 0.5.7. The existing test suite covers the coordinator's storage layer (which is already param-aware via `async_record_advisor_acknowledgment(param_id)`); the new code is a thin handler + dashboard wiring layer.
+
+### Existing users on 0.5.7
+
+After upgrade, call `reeftanktracker.regenerate_dashboard` to surface the new Actions card on the per-element views.
+
 ## 0.5.7 — `update_supplement_profile` service for fixing 0.4.4-era profiles in place
 
 **Tested against:** HA Core `2026.4.4` (dev).

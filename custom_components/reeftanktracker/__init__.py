@@ -60,6 +60,12 @@ SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
 SERVICE_DIAGNOSE_DASHBOARD = "diagnose_dashboard"
 SERVICE_ACK_ALK_RECOMMENDATION = "acknowledge_alk_recommendation"
 SERVICE_DISMISS_ALK_RECOMMENDATION = "dismiss_alk_recommendation"
+# Generic per-element ack/dismiss — accept a `parameter` arg so the
+# same service handles kh / calcium / magnesium / nitrate / phosphate.
+# The alk-specific services stay registered for back-compat but new
+# dashboards (per-element views from 0.5.2+) call these instead.
+SERVICE_ACK_ADVISOR = "acknowledge_advisor"
+SERVICE_DISMISS_ADVISOR = "dismiss_advisor"
 SERVICE_LOG_DEMAND_CHANGE = "log_demand_change"
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,6 +126,25 @@ ACK_ALK_SCHEMA = vol.Schema({
 })
 
 DISMISS_ALK_SCHEMA = vol.Schema({
+    vol.Optional("suggested_value_mL", default=0.0): vol.Coerce(float),
+})
+
+# Generic per-element ack/dismiss schemas. `parameter` is required —
+# everything else is optional and inferred. Constrained to known
+# advisor parameters so a typo can't silently create a new param_id
+# bucket in storage.
+_ADVISOR_PARAMETERS = vol.In([
+    "kh", "calcium", "magnesium", "nitrate", "phosphate",
+])
+
+ACK_ADVISOR_SCHEMA = vol.Schema({
+    vol.Required("parameter"): _ADVISOR_PARAMETERS,
+    vol.Optional("applied_value_mL"): vol.Coerce(float),
+    vol.Optional("prev_value_mL"): vol.Coerce(float),
+})
+
+DISMISS_ADVISOR_SCHEMA = vol.Schema({
+    vol.Required("parameter"): _ADVISOR_PARAMETERS,
     vol.Optional("suggested_value_mL", default=0.0): vol.Coerce(float),
 })
 
@@ -377,6 +402,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_BACKFILL_STATISTICS, SERVICE_DIAGNOSE_DASHBOARD,
                 SERVICE_ACK_ALK_RECOMMENDATION,
                 SERVICE_DISMISS_ALK_RECOMMENDATION,
+                SERVICE_ACK_ADVISOR,
+                SERVICE_DISMISS_ADVISOR,
                 SERVICE_LOG_DEMAND_CHANGE,
                 SERVICE_ADD_SUPPLEMENT_PROFILE,
                 SERVICE_REMOVE_SUPPLEMENT_PROFILE,
@@ -613,6 +640,119 @@ async def _async_register_services(
                 f"Advisor enters dismiss-cooldown."
             ),
             advisor_unique_id="reef_alk_advisor_recommendation",
+        )
+
+    async def handle_acknowledge_advisor(call: ServiceCall) -> None:
+        """Generic acknowledge for any advisor parameter.
+
+        Mirrors the alk handler's no-payload UX (button click on the
+        dashboard with no args fills in `applied`/`prev` from the
+        current recommendation + live doser state) but routes through
+        the param-aware code path. For kh this duplicates the alk
+        handler's behaviour; for ca/mg/no3/po4 it uses
+        `param_advisor.compute_for_param` and reads the per-element
+        `_heads` option.
+        """
+        parameter = call.data["parameter"]
+        applied = call.data.get("applied_value_mL")
+        prev = call.data.get("prev_value_mL")
+
+        # Resolve current recommendation + heads using the right code
+        # path for this parameter.
+        from . import param_advisor as pa
+        from .alk_advisor import (
+            OPT_ALK_HEADS,
+            _opt as alk_opt,
+            _sum_dose_mL as alk_sum,
+            compute_for_entity as alk_compute,
+        )
+
+        if parameter == "kh":
+            current_rec = alk_compute(hass, coordinator)
+            heads = list(alk_opt(coordinator, OPT_ALK_HEADS) or [])
+            live_dose = alk_sum(hass, heads)
+        else:
+            current_rec = pa.compute_for_param(hass, coordinator, parameter)
+            heads = list(
+                pa._opt(coordinator, pa.opt_key(parameter, "heads"), [])
+                or []
+            )
+            live_dose = pa._sum_dose_mL(hass, heads)
+
+        if applied is None:
+            if current_rec is not None and current_rec.suggested_dose_mL is not None:
+                applied = float(current_rec.suggested_dose_mL)
+            else:
+                _LOGGER.warning(
+                    "acknowledge_advisor parameter=%s called with no "
+                    "applied_value_mL and no current recommendation — "
+                    "recording 0.0", parameter,
+                )
+                applied = 0.0
+
+        if prev is None:
+            if live_dose is not None:
+                prev = float(live_dose)
+            else:
+                # Fallback to last snapshot's recorded dose. Same
+                # last-resort path as the alk handler — only fires if
+                # heads aren't readable.
+                for s in reversed(coordinator.advisor_snapshots(parameter)):
+                    if s.get("dose_mL") is not None:
+                        prev = float(s["dose_mL"])
+                        break
+
+        await coordinator.async_record_advisor_acknowledgment(
+            parameter,
+            applied_value_mL=float(applied),
+            prev_value_mL=float(prev) if prev is not None else 0.0,
+        )
+        _LOGGER.warning(
+            "Acknowledged %s recommendation: applied=%s prev=%s",
+            parameter, applied, prev,
+        )
+        # Per-param sensor unique_id pattern matches dashboard.py's
+        # `reef_<param>_advisor_recommendation` convention. For kh the
+        # alk advisor uses `reef_alk_advisor_recommendation` (legacy
+        # naming — predates the per-element framework).
+        unique_id = (
+            "reef_alk_advisor_recommendation"
+            if parameter == "kh"
+            else f"reef_{parameter}_advisor_recommendation"
+        )
+        prev_str = (
+            f"{float(prev):.2f}" if prev is not None else "0.00"
+        )
+        await _show_action_feedback(
+            hass,
+            title=f"{parameter.capitalize()} recommendation acknowledged",
+            message=(
+                f"Applied {applied:.2f} mL/day (was {prev_str}). "
+                f"Advisor enters cooldown."
+            ),
+            advisor_unique_id=unique_id,
+        )
+
+    async def handle_dismiss_advisor(call: ServiceCall) -> None:
+        """Generic dismiss for any advisor parameter."""
+        parameter = call.data["parameter"]
+        suggested = float(call.data.get("suggested_value_mL", 0.0))
+        await coordinator.async_record_advisor_dismissal(
+            parameter, suggested_value_mL=suggested,
+        )
+        unique_id = (
+            "reef_alk_advisor_recommendation"
+            if parameter == "kh"
+            else f"reef_{parameter}_advisor_recommendation"
+        )
+        await _show_action_feedback(
+            hass,
+            title=f"{parameter.capitalize()} recommendation dismissed",
+            message=(
+                f"Ignored suggested {suggested:.2f} mL/day. "
+                f"Advisor enters dismiss-cooldown."
+            ),
+            advisor_unique_id=unique_id,
         )
 
     async def handle_log_demand_change(call: ServiceCall) -> None:
@@ -998,6 +1138,14 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_DISMISS_ALK_RECOMMENDATION, handle_dismiss_alk,
             schema=DISMISS_ALK_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_ACK_ADVISOR, handle_acknowledge_advisor,
+            schema=ACK_ADVISOR_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_DISMISS_ADVISOR, handle_dismiss_advisor,
+            schema=DISMISS_ADVISOR_SCHEMA,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_LOG_DEMAND_CHANGE, handle_log_demand_change,
