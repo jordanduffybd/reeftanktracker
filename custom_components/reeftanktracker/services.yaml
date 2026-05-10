@@ -284,6 +284,77 @@ dismiss_alk_recommendation:
           max: 1000
           step: 0.1
 
+acknowledge_advisor:
+  name: Acknowledge Advisor Recommendation
+  description: >
+    Generic acknowledge for any advisor parameter (kh / calcium /
+    magnesium / nitrate / phosphate). Same behaviour as
+    `acknowledge_alk_recommendation` but takes a `parameter` field so
+    the per-element dashboard buttons can route to the right advisor.
+    No-payload click on a dashboard button infers `applied_value_mL`
+    from the current recommendation and `prev_value_mL` from the live
+    sum across that parameter's configured doser heads.
+  fields:
+    parameter:
+      name: Parameter
+      description: Which advisor to acknowledge.
+      required: true
+      example: calcium
+      selector:
+        select:
+          options: [kh, calcium, magnesium, nitrate, phosphate]
+    applied_value_mL:
+      name: Applied dose (mL/day)
+      description: >
+        The new daily dose you set in Reefbeat. Optional — inferred
+        from the current recommendation if omitted.
+      example: 2.7
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+    prev_value_mL:
+      name: Previous dose (mL/day)
+      description: >
+        Optional — the dose you replaced. If omitted, inferred from the
+        live sum across the parameter's configured doser heads, falling
+        back to the last persisted snapshot's dose.
+      example: 3.0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+
+dismiss_advisor:
+  name: Dismiss Advisor Recommendation
+  description: >
+    Generic dismiss for any advisor parameter (kh / calcium / magnesium
+    / nitrate / phosphate). Mirror of `dismiss_alk_recommendation` with
+    a `parameter` arg.
+  fields:
+    parameter:
+      name: Parameter
+      description: Which advisor to dismiss.
+      required: true
+      example: calcium
+      selector:
+        select:
+          options: [kh, calcium, magnesium, nitrate, phosphate]
+    suggested_value_mL:
+      name: Dismissed value (mL/day)
+      description: Optional — the value you're dismissing, for audit.
+      example: 2.7
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 1000
+          step: 0.1
+
 log_demand_change:
   name: Log Demand Change
   description: >

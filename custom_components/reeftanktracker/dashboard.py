@@ -544,10 +544,41 @@ def _build_param_advisor_view(
         ],
     }
 
-    # Activity log: filtered to this param's advisor sensor + the
-    # KH Keeper calibration entities (unchanged across params — the
-    # advisor surface is shared). Per-element ack/dismiss arrives in
-    # 0.5.3 along with multi-supplement work.
+    # Action buttons — generic acknowledge/dismiss services that take
+    # `parameter` so the same handler covers all per-element advisors.
+    # No-payload click: handler infers `applied_value_mL` from the
+    # current recommendation and `prev_value_mL` from the live sum
+    # across configured doser heads (per-element opt key
+    # `advisor_<param>_heads`).
+    actions_card = {
+        "type": "entities",
+        "title": "Actions",
+        "show_header_toggle": False,
+        "entities": [
+            {
+                "type": "call-service",
+                "name": f"Acknowledge — I applied this {title} dose change",
+                "icon": "mdi:check-circle",
+                "action_name": "Acknowledge",
+                "service": "reeftanktracker.acknowledge_advisor",
+                "service_data": {"parameter": param_id},
+            },
+            {
+                "type": "call-service",
+                "name": f"Dismiss — ignore this {title} suggestion",
+                "icon": "mdi:close-circle",
+                "action_name": "Dismiss",
+                "service": "reeftanktracker.dismiss_advisor",
+                "service_data": {"parameter": param_id},
+            },
+        ],
+    }
+
+    # Activity log: filtered to this param's advisor sensor. Catches
+    # state changes (when recommendation changes) AND `logbook_entry`
+    # events fired by acknowledge/dismiss handlers via the
+    # `_show_action_feedback` helper, so user actions show up here
+    # alongside algorithm-driven changes.
     activity_log = {
         "type": "logbook",
         "title": f"Recent {title} activity",
@@ -590,6 +621,11 @@ def _build_param_advisor_view(
             {
                 "type": "grid",
                 "column_span": 1,
+                "cards": [actions_card],
+            },
+            {
+                "type": "grid",
+                "column_span": 3,
                 "cards": [help_card],
             },
             {
