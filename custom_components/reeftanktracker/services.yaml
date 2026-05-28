@@ -716,3 +716,85 @@ log_water_change:
       selector:
         text:
           multiline: true
+
+ignore_readings:
+  name: Ignore Readings
+  description: >
+    Mark all readings (and derived advisor snapshots) for a parameter in a
+    time window as excluded, preserving them in storage for audit but
+    skipping them from advisor / drift / statistics calculations. Use when
+    a sensor malfunctioned or you logged a typo across multiple entries.
+    Reversible via `unignore_readings`.
+  fields:
+    parameter:
+      name: Parameter
+      description: Parameter id (e.g. kh, calcium, phosphate).
+      required: true
+      example: kh
+      selector:
+        text:
+    from:
+      name: From (ISO 8601)
+      description: >
+        Window start, inclusive. Readings with `sample_taken_at >= this`
+        are eligible.
+      required: true
+      example: "2026-05-17T08:00:00+10:00"
+      selector:
+        text:
+    to:
+      name: To (ISO 8601)
+      description: >
+        Window end, inclusive. Readings with `sample_taken_at <= this`
+        are eligible.
+      required: true
+      example: "2026-05-17T14:00:00+10:00"
+      selector:
+        text:
+    reason:
+      name: Reason
+      description: >
+        Free-form reason recorded against each excluded reading
+        (e.g. "KH Keeper sensor malfunction 2026-05-17").
+      required: true
+      example: "KH Keeper sensor malfunction"
+      selector:
+        text:
+    source:
+      name: Source (optional filter)
+      description: >
+        Restrict to one source only. Useful for ignoring bad auto-source
+        readings without touching any manual test backups in the same
+        window.
+      selector:
+        select:
+          options:
+            - manual
+            - auto
+            - icp
+
+unignore_readings:
+  name: Unignore Readings
+  description: >
+    Reverse `ignore_readings` — clears the excluded flag from all
+    readings + snapshots in the window so they re-enter advisor
+    calculations.
+  fields:
+    parameter:
+      name: Parameter
+      required: true
+      example: kh
+      selector:
+        text:
+    from:
+      name: From (ISO 8601)
+      required: true
+      example: "2026-05-17T08:00:00+10:00"
+      selector:
+        text:
+    to:
+      name: To (ISO 8601)
+      required: true
+      example: "2026-05-17T14:00:00+10:00"
+      selector:
+        text:

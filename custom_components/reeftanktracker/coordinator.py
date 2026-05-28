@@ -126,6 +126,11 @@ class Reading:
     `sample_taken_at` is when the water was actually sampled (canonical for
     history). `recorded_at` is when the bridge / user logged it (might be
     weeks later for ICP imports).
+
+    `excluded_at` + `excluded_reason` mark a reading as ignored (e.g. sensor
+    malfunction). Excluded readings stay in storage for audit but are
+    skipped by advisor, snapshot, drift, and statistics consumers — see
+    `_is_excluded()` helper. Both fields are None for normal readings.
     """
     parameter: str
     value: float
@@ -136,9 +141,11 @@ class Reading:
     recorded_at: str
     test_id: str | None = None       # ICP test reference
     notes: str | None = None
+    excluded_at: str | None = None    # ISO 8601, set by ignore_readings
+    excluded_reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "parameter": self.parameter,
             "value": self.value,
             "unit": self.unit,
@@ -149,6 +156,23 @@ class Reading:
             "test_id": self.test_id,
             "notes": self.notes,
         }
+        # Only persist exclusion fields when set — keeps existing
+        # readings' on-disk shape unchanged and storage compact.
+        if self.excluded_at is not None:
+            d["excluded_at"] = self.excluded_at
+        if self.excluded_reason is not None:
+            d["excluded_reason"] = self.excluded_reason
+        return d
+
+
+def _is_excluded(item: dict[str, Any]) -> bool:
+    """Return True if a reading or snapshot dict has been ignored.
+
+    Centralises the predicate so every consumer site uses the same check.
+    A reading is excluded iff `excluded_at` is a non-empty string —
+    `excluded_reason` is informational only.
+    """
+    return bool(item.get("excluded_at"))
 
 
 class ReefDataCoordinator:
@@ -598,28 +622,205 @@ class ReefDataCoordinator:
                 statistic_id, dt, exc,
             )
 
-    def latest_reading(self, parameter: str) -> dict[str, Any] | None:
+    def latest_reading(
+        self, parameter: str, *, include_excluded: bool = False,
+    ) -> dict[str, Any] | None:
         """Most recent reading for `parameter`, comparing by sample_taken_at.
 
         A Hanna test taken yesterday beats an ICP sampled three weeks ago
-        even if the ICP was imported today.
+        even if the ICP was imported today. Excluded readings (marked via
+        `ignore_readings`) are skipped by default.
         """
-        candidates = [r for r in self._data["readings"] if r["parameter"] == parameter]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda r: r["sample_taken_at"])
-
-    def latest_manual(self, parameter: str) -> dict[str, Any] | None:
         candidates = [
             r for r in self._data["readings"]
-            if r["parameter"] == parameter and r["source"] == SOURCE_MANUAL
+            if r["parameter"] == parameter
+            and (include_excluded or not _is_excluded(r))
         ]
         if not candidates:
             return None
         return max(candidates, key=lambda r: r["sample_taken_at"])
 
-    def readings_for(self, parameter: str) -> list[dict[str, Any]]:
-        return [r for r in self._data["readings"] if r["parameter"] == parameter]
+    def latest_manual(
+        self, parameter: str, *, include_excluded: bool = False,
+    ) -> dict[str, Any] | None:
+        candidates = [
+            r for r in self._data["readings"]
+            if r["parameter"] == parameter
+            and r["source"] == SOURCE_MANUAL
+            and (include_excluded or not _is_excluded(r))
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda r: r["sample_taken_at"])
+
+    def readings_for(
+        self, parameter: str, *, include_excluded: bool = False,
+    ) -> list[dict[str, Any]]:
+        """All readings for `parameter`. Excluded readings are skipped
+        unless `include_excluded=True` (e.g. for the dashboard timeline
+        which wants to show them with a strikethrough)."""
+        return [
+            r for r in self._data["readings"]
+            if r["parameter"] == parameter
+            and (include_excluded or not _is_excluded(r))
+        ]
+
+    async def async_ignore_readings(
+        self,
+        parameter: str,
+        *,
+        from_iso: str,
+        to_iso: str,
+        reason: str,
+        source: str | None = None,
+    ) -> dict[str, int]:
+        """Mark all readings for `parameter` with
+        sample_taken_at in [from_iso, to_iso] as excluded.
+
+        Also marks the corresponding advisor snapshots for the same
+        parameter and window — the advisor reads snapshots not raw
+        readings, so without this the bad data would still drive
+        recommendations even after the raw readings are ignored.
+
+        `source` (optional) restricts to one of "manual" | "auto" |
+        "icp" — e.g. ignore only the bad KH-Keeper auto readings
+        without touching manual Salifert backups in the same window.
+
+        Returns a dict like
+        ``{"readings": N, "snapshots": M}`` of items affected.
+        Idempotent: re-running on already-excluded items is a no-op
+        for those items but will re-apply to any items that were
+        added to the window since the last call.
+        """
+        if from_iso > to_iso:
+            raise ValueError(
+                f"from_iso ({from_iso!r}) must be <= to_iso ({to_iso!r})"
+            )
+        if source is not None and source not in (
+            SOURCE_MANUAL, SOURCE_AUTO, SOURCE_ICP,
+        ):
+            raise ValueError(f"Unknown source filter: {source!r}")
+        if not reason or not reason.strip():
+            raise ValueError("reason is required (non-empty)")
+
+        marked_at = _now_iso()
+        readings_affected = 0
+        for r in self._data["readings"]:
+            if r["parameter"] != parameter:
+                continue
+            sat = r.get("sample_taken_at") or ""
+            if not (from_iso <= sat <= to_iso):
+                continue
+            if source is not None and r.get("source") != source:
+                continue
+            if _is_excluded(r):
+                continue  # don't overwrite an existing exclusion
+            r["excluded_at"] = marked_at
+            r["excluded_reason"] = reason
+            readings_affected += 1
+
+        # Sweep advisor snapshots in the same window. Snapshots store
+        # their time in `at` (the snapshot tick timestamp), not
+        # sample_taken_at — daily snapshotter writes one at the
+        # configured local time (default 23:55).
+        snapshots_affected = 0
+        try:
+            blob = self._advisor_blob(parameter)
+        except Exception:  # noqa: BLE001
+            blob = None
+        if blob is not None:
+            for s in blob.get("snapshots", []):
+                sat = s.get("at") or ""
+                if not (from_iso <= sat <= to_iso):
+                    continue
+                if _is_excluded(s):
+                    continue
+                s["excluded_at"] = marked_at
+                s["excluded_reason"] = reason
+                snapshots_affected += 1
+
+        if readings_affected or snapshots_affected:
+            await self.async_save()
+            async_dispatcher_send(
+                self.hass, SIGNAL_READING_RECORDED, parameter,
+            )
+            async_dispatcher_send(
+                self.hass, SIGNAL_ADVISOR_UPDATED, parameter,
+            )
+
+        _LOGGER.info(
+            "Ignored %d %s reading(s) and %d snapshot(s) in [%s, %s] "
+            "(reason: %s)",
+            readings_affected, parameter, snapshots_affected,
+            from_iso, to_iso, reason,
+        )
+        return {
+            "readings": readings_affected,
+            "snapshots": snapshots_affected,
+        }
+
+    async def async_unignore_readings(
+        self,
+        parameter: str,
+        *,
+        from_iso: str,
+        to_iso: str,
+    ) -> dict[str, int]:
+        """Reverse of `async_ignore_readings`: clears the
+        `excluded_at` + `excluded_reason` fields from any readings
+        and snapshots in the window. Returns affected counts."""
+        if from_iso > to_iso:
+            raise ValueError(
+                f"from_iso ({from_iso!r}) must be <= to_iso ({to_iso!r})"
+            )
+
+        readings_affected = 0
+        for r in self._data["readings"]:
+            if r["parameter"] != parameter:
+                continue
+            sat = r.get("sample_taken_at") or ""
+            if not (from_iso <= sat <= to_iso):
+                continue
+            if not _is_excluded(r):
+                continue
+            r.pop("excluded_at", None)
+            r.pop("excluded_reason", None)
+            readings_affected += 1
+
+        snapshots_affected = 0
+        try:
+            blob = self._advisor_blob(parameter)
+        except Exception:  # noqa: BLE001
+            blob = None
+        if blob is not None:
+            for s in blob.get("snapshots", []):
+                sat = s.get("at") or ""
+                if not (from_iso <= sat <= to_iso):
+                    continue
+                if not _is_excluded(s):
+                    continue
+                s.pop("excluded_at", None)
+                s.pop("excluded_reason", None)
+                snapshots_affected += 1
+
+        if readings_affected or snapshots_affected:
+            await self.async_save()
+            async_dispatcher_send(
+                self.hass, SIGNAL_READING_RECORDED, parameter,
+            )
+            async_dispatcher_send(
+                self.hass, SIGNAL_ADVISOR_UPDATED, parameter,
+            )
+
+        _LOGGER.info(
+            "Unignored %d %s reading(s) and %d snapshot(s) in [%s, %s]",
+            readings_affected, parameter, snapshots_affected,
+            from_iso, to_iso,
+        )
+        return {
+            "readings": readings_affected,
+            "snapshots": snapshots_affected,
+        }
 
     async def async_backfill_statistics(self, parameter: str | None = None) -> int:
         """Re-import all stored readings into HA's statistics table.
@@ -636,12 +837,13 @@ class ReefDataCoordinator:
                 "Backfill skipped — recorder/statistics module not available"
             )
             return 0
-        readings = self._data["readings"]
+        readings = [r for r in self._data["readings"] if not _is_excluded(r)]
         if parameter:
             readings = [r for r in readings if r["parameter"] == parameter]
 
         _LOGGER.warning(
-            "Backfill: processing %d stored readings (parameter filter: %s)",
+            "Backfill: processing %d stored readings (parameter filter: %s, "
+            "excluded readings skipped)",
             len(readings), parameter or "all",
         )
 
@@ -792,8 +994,18 @@ class ReefDataCoordinator:
             blob.setdefault(k, [])
         return blob
 
-    def advisor_snapshots(self, param_id: str) -> list[dict[str, Any]]:
-        return list(self._advisor_blob(param_id)["snapshots"])
+    def advisor_snapshots(
+        self, param_id: str, *, include_excluded: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Daily snapshots for `param_id`. Excluded snapshots (set by
+        `ignore_readings`, which also sweeps snapshots in the same
+        window) are skipped by default — the advisor recommendation
+        path must NEVER see them or it'd compute medians from data the
+        user explicitly invalidated."""
+        return [
+            s for s in self._advisor_blob(param_id)["snapshots"]
+            if include_excluded or not _is_excluded(s)
+        ]
 
     def advisor_acknowledgments(self, param_id: str) -> list[dict[str, Any]]:
         return list(self._advisor_blob(param_id)["acknowledgments"])

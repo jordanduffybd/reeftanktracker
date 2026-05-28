@@ -667,3 +667,243 @@ async def test_supplement_profiles_for_kh_includes_legacy_no_param_id(hass):
     kh = coord.supplement_profiles_for("kh")
     assert len(kh) == 1
     assert kh[0]["id"] == "legacy_alk_supp"
+
+
+# ---------------------------------------------------------------------------
+# ignore_readings / unignore_readings (0.5.9)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ignore_readings_marks_in_window(hass):
+    """Readings inside the window get excluded_at + excluded_reason;
+    readings outside are untouched."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+
+    now = datetime.now(timezone.utc)
+    before = _iso(now - timedelta(hours=10))
+    inside_a = _iso(now - timedelta(hours=6))
+    inside_b = _iso(now - timedelta(hours=5))
+    after = _iso(now - timedelta(hours=1))
+
+    await coord.async_record_reading(
+        "kh", 8.4, source=SOURCE_AUTO, sample_taken_at=before,
+    )
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=inside_a,
+    )
+    await coord.async_record_reading(
+        "kh", 0.1, source=SOURCE_AUTO, sample_taken_at=inside_b,
+    )
+    await coord.async_record_reading(
+        "kh", 8.5, source=SOURCE_AUTO, sample_taken_at=after,
+    )
+
+    result = await coord.async_ignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=7)),
+        to_iso=_iso(now - timedelta(hours=4)),
+        reason="sensor malfunction",
+    )
+    assert result["readings"] == 2
+
+    # Excluded readings should NOT appear in default readings_for
+    visible = coord.readings_for("kh")
+    assert len(visible) == 2
+    assert {r["value"] for r in visible} == {8.4, 8.5}
+
+    # But ARE visible with include_excluded
+    all_readings = coord.readings_for("kh", include_excluded=True)
+    assert len(all_readings) == 4
+    excluded = [r for r in all_readings if r.get("excluded_at")]
+    assert len(excluded) == 2
+    assert all(r["excluded_reason"] == "sensor malfunction" for r in excluded)
+
+
+@pytest.mark.asyncio
+async def test_ignore_readings_source_filter(hass):
+    """source='auto' must not touch manual readings in the same window."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    at = _iso(now - timedelta(hours=2))
+
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=at,
+    )
+    await coord.async_record_reading(
+        "kh", 8.4, source=SOURCE_MANUAL, sample_taken_at=at,
+    )
+
+    result = await coord.async_ignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=3)),
+        to_iso=_iso(now - timedelta(hours=1)),
+        reason="sensor",
+        source=SOURCE_AUTO,
+    )
+    assert result["readings"] == 1
+
+    visible = coord.readings_for("kh")
+    assert len(visible) == 1
+    assert visible[0]["source"] == SOURCE_MANUAL
+
+
+@pytest.mark.asyncio
+async def test_unignore_readings_clears_exclusion(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    at = _iso(now - timedelta(hours=2))
+
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=at,
+    )
+    await coord.async_ignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=3)),
+        to_iso=_iso(now - timedelta(hours=1)),
+        reason="sensor",
+    )
+    assert coord.readings_for("kh") == []
+
+    result = await coord.async_unignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=3)),
+        to_iso=_iso(now - timedelta(hours=1)),
+    )
+    assert result["readings"] == 1
+    visible = coord.readings_for("kh")
+    assert len(visible) == 1
+    assert "excluded_at" not in visible[0]
+    assert "excluded_reason" not in visible[0]
+
+
+@pytest.mark.asyncio
+async def test_ignore_readings_sweeps_advisor_snapshots(hass):
+    """The whole point: advisor snapshots in the same window must be
+    excluded too, otherwise the advisor would still see the bad
+    median because it reads snapshots not raw readings."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    inside = _iso(now - timedelta(hours=4))
+    outside = _iso(now - timedelta(hours=20))
+
+    await coord.async_record_advisor_snapshot(
+        "kh", at=outside, kh=8.4, dose_mL=10.0,
+    )
+    await coord.async_record_advisor_snapshot(
+        "kh", at=inside, kh=99.0, dose_mL=10.0,
+    )
+
+    # Also a reading inside the window so we exercise both paths
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=inside,
+    )
+
+    result = await coord.async_ignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=6)),
+        to_iso=_iso(now - timedelta(hours=2)),
+        reason="sensor malfunction",
+    )
+    assert result["readings"] == 1
+    assert result["snapshots"] == 1
+
+    # Default-filtered snapshot list excludes the bad one
+    snaps = coord.advisor_snapshots("kh")
+    assert len(snaps) == 1
+    assert snaps[0]["kh"] == 8.4
+
+    # include_excluded shows both
+    all_snaps = coord.advisor_snapshots("kh", include_excluded=True)
+    assert len(all_snaps) == 2
+
+
+@pytest.mark.asyncio
+async def test_ignore_readings_idempotent(hass):
+    """Running ignore twice over the same window doesn't re-mark
+    already-excluded readings (counts only newly-affected)."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    at = _iso(now - timedelta(hours=2))
+
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=at,
+    )
+    kwargs = dict(
+        from_iso=_iso(now - timedelta(hours=3)),
+        to_iso=_iso(now - timedelta(hours=1)),
+        reason="sensor",
+    )
+    r1 = await coord.async_ignore_readings("kh", **kwargs)
+    r2 = await coord.async_ignore_readings("kh", **kwargs)
+    assert r1["readings"] == 1
+    assert r2["readings"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ignore_readings_rejects_bad_args(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    valid_from = _iso(now - timedelta(hours=2))
+    valid_to = _iso(now)
+
+    # from > to
+    with pytest.raises(ValueError):
+        await coord.async_ignore_readings(
+            "kh", from_iso=valid_to, to_iso=valid_from, reason="x",
+        )
+    # blank reason
+    with pytest.raises(ValueError):
+        await coord.async_ignore_readings(
+            "kh", from_iso=valid_from, to_iso=valid_to, reason="   ",
+        )
+    # invalid source filter
+    with pytest.raises(ValueError):
+        await coord.async_ignore_readings(
+            "kh", from_iso=valid_from, to_iso=valid_to,
+            reason="x", source="bogus",
+        )
+
+
+@pytest.mark.asyncio
+async def test_latest_reading_skips_excluded(hass):
+    """The latest_reading helper must skip excluded readings — sensor.py
+    reads through this for the displayed 'latest KH' state."""
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+
+    older = _iso(now - timedelta(hours=10))
+    newer = _iso(now - timedelta(hours=1))
+
+    await coord.async_record_reading(
+        "kh", 8.4, source=SOURCE_AUTO, sample_taken_at=older,
+    )
+    # The newer one is the malfunction
+    await coord.async_record_reading(
+        "kh", 99.0, source=SOURCE_AUTO, sample_taken_at=newer,
+    )
+
+    # Before ignoring: newest (bad) wins
+    pre = coord.latest_reading("kh")
+    assert pre["value"] == 99.0
+
+    await coord.async_ignore_readings(
+        "kh",
+        from_iso=_iso(now - timedelta(hours=2)),
+        to_iso=_iso(now),
+        reason="sensor malfunction",
+    )
+
+    # After ignoring: the older clean reading is now "latest" again
+    post = coord.latest_reading("kh")
+    assert post["value"] == 8.4
+
+    # include_excluded restores the original behaviour
+    forced = coord.latest_reading("kh", include_excluded=True)
+    assert forced["value"] == 99.0
