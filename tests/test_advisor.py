@@ -595,6 +595,123 @@ def test_empirical_potency_diverges_from_spec_triggers_warning():
     assert "drift band" in rec.reason
 
 
+def test_empirical_potency_remover_matches_spec():
+    """Remover (negative spec_eff): raising the dose should LOWER the value.
+
+    Regression for the additive-only sign bug — empirical potency must be
+    derived (not rejected as "non-positive") and keep spec's negative sign,
+    so the empirical/spec ratio is still positive.
+
+    spec_eff for 425 L at -0.04 ppm/mL/100L = -0.009412 ppm/mL.
+    Δdose = +0.5 mL/day → expected Δslope = -0.004706 ppm/day.
+    Empirical potency = (-0.004706 - 0)/0.5 = -0.009412 ≈ spec.
+    """
+    ack_at = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    now = ack_at + timedelta(days=7)
+    spec_per_100L = -0.04
+    cfg = AdvisorConfig(
+        spec_efficiency_dkh_per_mL_per_100L=spec_per_100L,
+        target_min=0.03, target_max=0.30,
+    )
+    spec_eff = spec_per_100L * 100.0 / 425.0
+    expected_dslope = 0.5 * spec_eff  # negative — value declines
+    pre_snaps = [
+        Snapshot(at=ack_at - timedelta(days=7 - i), kh=0.15, dose_mL=4.0)
+        for i in range(7)
+    ]
+    post_snaps = [
+        Snapshot(
+            at=ack_at + timedelta(days=i + 1),
+            kh=0.15 + expected_dslope * (i + 1),
+            dose_mL=4.5,
+        )
+        for i in range(7)
+    ]
+    rec = compute_recommendation(
+        now=now,
+        snapshots=pre_snaps + post_snaps,
+        current_dose_mL=4.5,
+        cfg=cfg,
+        acknowledgments=[_ack(ack_at, applied=4.5, prev=4.0)],
+    )
+    assert rec.empirical_potency_dkh_per_mL is not None
+    assert rec.empirical_potency_dkh_per_mL < 0  # sign preserved for remover
+    assert abs(rec.empirical_potency_dkh_per_mL - spec_eff) < 0.002
+    assert abs(rec.empirical_to_spec_ratio - 1.0) < 0.2
+    assert rec.spec_drift_warning is False
+
+
+def test_empirical_potency_remover_diverges_triggers_warning():
+    """Remover removing 2× faster than spec → ratio≈2, drift warning fires."""
+    ack_at = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    now = ack_at + timedelta(days=7)
+    spec_per_100L = -0.04
+    cfg = AdvisorConfig(
+        spec_efficiency_dkh_per_mL_per_100L=spec_per_100L,
+        target_min=0.03, target_max=0.30,
+    )
+    spec_eff = spec_per_100L * 100.0 / 425.0
+    dslope = 2.0 * 0.5 * spec_eff  # 2× the spec-predicted decline
+    pre_snaps = [
+        Snapshot(at=ack_at - timedelta(days=7 - i), kh=0.15, dose_mL=4.0)
+        for i in range(7)
+    ]
+    post_snaps = [
+        Snapshot(
+            at=ack_at + timedelta(days=i + 1),
+            kh=0.15 + dslope * (i + 1),
+            dose_mL=4.5,
+        )
+        for i in range(7)
+    ]
+    rec = compute_recommendation(
+        now=now,
+        snapshots=pre_snaps + post_snaps,
+        current_dose_mL=4.5,
+        cfg=cfg,
+        acknowledgments=[_ack(ack_at, applied=4.5, prev=4.0)],
+    )
+    assert rec.empirical_potency_dkh_per_mL is not None
+    assert rec.empirical_potency_dkh_per_mL < 0
+    assert abs(rec.empirical_to_spec_ratio - 2.0) < 0.3
+    assert rec.spec_drift_warning is True
+    assert "observed potency" in rec.reason
+
+
+def test_empirical_potency_remover_wrong_sign_rejected():
+    """Remover whose value ROSE after a dose increase → sign disagrees with
+    spec → rejected (not a real potency signal)."""
+    ack_at = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    now = ack_at + timedelta(days=7)
+    cfg = AdvisorConfig(
+        spec_efficiency_dkh_per_mL_per_100L=-0.04,
+        target_min=0.03, target_max=0.30,
+    )
+    pre_snaps = [
+        Snapshot(at=ack_at - timedelta(days=7 - i), kh=0.15, dose_mL=4.0)
+        for i in range(7)
+    ]
+    # Dose went UP but the value also went UP — wrong direction for a remover.
+    post_snaps = [
+        Snapshot(
+            at=ack_at + timedelta(days=i + 1),
+            kh=0.15 + 0.005 * (i + 1),
+            dose_mL=4.5,
+        )
+        for i in range(7)
+    ]
+    rec = compute_recommendation(
+        now=now,
+        snapshots=pre_snaps + post_snaps,
+        current_dose_mL=4.5,
+        cfg=cfg,
+        acknowledgments=[_ack(ack_at, applied=4.5, prev=4.0)],
+    )
+    assert rec.empirical_potency_dkh_per_mL is None
+    assert rec.spec_drift_warning is False
+    assert "disagrees in sign" in rec.empirical_potency_basis
+
+
 def test_empirical_potency_skipped_for_small_dose_change():
     ack_at = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
     now = ack_at + timedelta(days=7)

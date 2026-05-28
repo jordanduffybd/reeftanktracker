@@ -58,6 +58,8 @@ from .parameters import INPUT_PARAMETERS
 SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
 SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
 SERVICE_DIAGNOSE_DASHBOARD = "diagnose_dashboard"
+SERVICE_IGNORE_READINGS = "ignore_readings"
+SERVICE_UNIGNORE_READINGS = "unignore_readings"
 SERVICE_ACK_ALK_RECOMMENDATION = "acknowledge_alk_recommendation"
 SERVICE_DISMISS_ALK_RECOMMENDATION = "dismiss_alk_recommendation"
 # Generic per-element ack/dismiss — accept a `parameter` arg so the
@@ -89,6 +91,20 @@ RECORD_READING_SCHEMA = vol.Schema({
     vol.Optional("sample_taken_at"): cv.string,
     vol.Optional("test_id"): cv.string,
     vol.Optional("notes"): cv.string,
+})
+
+IGNORE_READINGS_SCHEMA = vol.Schema({
+    vol.Required("parameter"): cv.string,
+    vol.Required("from"): cv.string,   # ISO 8601 timestamp, inclusive
+    vol.Required("to"): cv.string,     # ISO 8601 timestamp, inclusive
+    vol.Required("reason"): cv.string,
+    vol.Optional("source"): vol.In([SOURCE_MANUAL, SOURCE_AUTO, SOURCE_ICP]),
+})
+
+UNIGNORE_READINGS_SCHEMA = vol.Schema({
+    vol.Required("parameter"): cv.string,
+    vol.Required("from"): cv.string,
+    vol.Required("to"): cv.string,
 })
 
 ADD_INVENTORY_SCHEMA = vol.Schema({
@@ -559,6 +575,35 @@ async def _async_register_services(
             parameter=call.data.get("parameter") or None,
         )
         _LOGGER.info("Backfilled %d statistic points", n)
+
+    async def handle_ignore_readings(call: ServiceCall) -> None:
+        result = await coordinator.async_ignore_readings(
+            parameter=call.data["parameter"],
+            from_iso=call.data["from"],
+            to_iso=call.data["to"],
+            reason=call.data["reason"],
+            source=call.data.get("source"),
+        )
+        _LOGGER.warning(
+            "ignore_readings: %d reading(s), %d snapshot(s) marked "
+            "excluded for %s in [%s, %s] — %s",
+            result["readings"], result["snapshots"],
+            call.data["parameter"], call.data["from"], call.data["to"],
+            call.data["reason"],
+        )
+
+    async def handle_unignore_readings(call: ServiceCall) -> None:
+        result = await coordinator.async_unignore_readings(
+            parameter=call.data["parameter"],
+            from_iso=call.data["from"],
+            to_iso=call.data["to"],
+        )
+        _LOGGER.warning(
+            "unignore_readings: %d reading(s), %d snapshot(s) unmarked "
+            "for %s in [%s, %s]",
+            result["readings"], result["snapshots"],
+            call.data["parameter"], call.data["from"], call.data["to"],
+        )
 
     async def handle_diagnose_dashboard(call: ServiceCall) -> None:
         # Logs the diagnostic at WARNING level so it's visible at the
@@ -1127,6 +1172,14 @@ async def _async_register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_BACKFILL_STATISTICS, handle_backfill_statistics,
             schema=vol.Schema({vol.Optional("parameter"): cv.string}),
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_IGNORE_READINGS, handle_ignore_readings,
+            schema=IGNORE_READINGS_SCHEMA,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_UNIGNORE_READINGS, handle_unignore_readings,
+            schema=UNIGNORE_READINGS_SCHEMA,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_DIAGNOSE_DASHBOARD, handle_diagnose_dashboard,

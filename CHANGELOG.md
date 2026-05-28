@@ -2,6 +2,49 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.9 — Ignore bad readings, and per-element advisor remover fixes
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Why
+
+When an auto-source sensor (e.g. KH Keeper) malfunctions, the bad readings flow into storage and silently bias the advisor. Until now the only fix was hand-editing `.storage/reeftanktracker.<entry>` — fiddly, and easy to miss the advisor *snapshots* derived from the bad readings, leaving the recommendation algorithm still computing from garbage even after the raw readings are gone. 0.5.9 adds a proper ignore/unignore service that handles both.
+
+### What
+
+Two new services that mark a time-window of readings — and the advisor snapshots derived from them — as excluded. Excluded items stay in storage for audit but are skipped by every consumer (latest_reading, advisor median, drift calc, statistics import).
+
+**Services:**
+- `reeftanktracker.ignore_readings` — required `parameter`, `from`, `to`, `reason`; optional `source` filter to ignore e.g. only auto-source bad readings without touching manual backups in the same window. Returns counts of affected readings + snapshots.
+- `reeftanktracker.unignore_readings` — reverses the above for the same `parameter` / `from` / `to`. Idempotent.
+
+**Schema additions:** readings and advisor snapshots gain two optional fields, `excluded_at` (ISO 8601) and `excluded_reason` (free-form text). Both default to `None` and only serialise to storage when set — existing storage stays bit-identical for unmodified readings.
+
+**Consumer behaviour:** `coordinator.latest_reading`, `latest_manual`, `readings_for`, `advisor_snapshots`, and `async_backfill_statistics` all gained an `include_excluded=False` kwarg (default skips excluded). The recommendation path (alk advisor + per-element param advisor) inherits the skip automatically because it reads through `advisor_snapshots`.
+
+### Why both readings AND snapshots?
+
+The alk advisor doesn't compute medians from raw readings — it computes them from one-per-day snapshots written by the 23:55 snapshotter. A bad reading at 14:00 contaminates the 23:55 snapshot for that day. Ignoring only the raw reading would leave the snapshot intact and the advisor would still see the garbage. So `ignore_readings` sweeps both within the window.
+
+### Tests
+
+Seven new tests in `tests/test_coordinator.py` covering reading + snapshot exclusion, source filter, unignore, idempotency, bad-args rejection, and `latest_reading` skip. Full suite: 177 → 184 tests passing.
+
+### Also: per-element advisor remover fixes
+
+Two fixes to the NO3 / PO4 (remover) advisors, bundled here since they're also restart-required:
+
+- **Empirical drift detection now works for removers.** The empirical-potency derivation rejected any non-positive value, and the drift-ratio only computed when spec potency was positive — so it silently skipped the negative-potency removers (NO3, PO4) entirely. The sign check is now relative to spec's sign: empirical potency is rejected only when it *disagrees in sign* with spec (i.e. the dose moved the parameter the wrong way), and the drift ratio computes for negative spec potency too. The main dose math was already sign-correct; only the empirical learning / `spec_drift_warning` feature was blind for removers.
+- **Remover cooldown shortened 30 d → 3 d (NO3, PO4).** Removers act in ~2-3 days, so the 30-day "monthly testing cycle" cooldown could freeze the advisor through a real excursion (e.g. high PO4 with an active Redfield/cyano warning). Ca/Mg keep the 30-day cadence (additive supplements, monthly manual tests). `dismiss_cooldown_days` for NO3/PO4 also drops 14 d → 3 d.
+
+Three new tests in `tests/test_advisor.py` (remover empirical potency: matches-spec, diverges-triggers-warning, wrong-sign-rejected) plus updated NO3/PO4 defaults assertions.
+
+### Restart needed?
+
+Yes — coordinator schema and service registration both change. Bundle with any other pending changes per the [[bundle-restart-required-changes]] policy.
+
+---
+
 ## 0.5.8 — Acknowledge / Dismiss buttons on per-element advisor dashboards
 
 **Tested against:** HA Core `2026.4.4` (dev).

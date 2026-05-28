@@ -144,13 +144,17 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "hysteresis": 0.5,
         # Carbon-dose response is non-linear; conservative step cap.
         "step_cap_pct": 10.0,
-        # Same sparse-cadence defaults as Ca/Mg.
+        # Same sparse-cadence window as Ca/Mg.
         "window_days": 90,
         "min_samples": 2,
         "min_trend_days": 2,
         "min_samples_after_event": 1,
-        "cooldown_days": 30.0,
-        "dismiss_cooldown_days": 14.0,
+        # Removers act fast: nitrate response is visible in ~2-3 days,
+        # so a 30-day "monthly cycle" cooldown would freeze the advisor
+        # through a real excursion. Wait just long enough to read the
+        # effect of the last change before suggesting another.
+        "cooldown_days": 3.0,
+        "dismiss_cooldown_days": 3.0,
         "correction_period_days": 30.0,
         "empirical_drift_pct": 50.0,
         "wc_settling_hours": 24.0,
@@ -184,13 +188,17 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         # catches drift without chasing kit jitter.
         "hysteresis": 0.01,
         "step_cap_pct": 10.0,
-        # Same sparse-cadence defaults as Ca/Mg/NO3.
+        # Same sparse-cadence window as Ca/Mg/NO3.
         "window_days": 90,
         "min_samples": 2,
         "min_trend_days": 2,
         "min_samples_after_event": 1,
-        "cooldown_days": 30.0,
-        "dismiss_cooldown_days": 14.0,
+        # Removers act fast: phosphate response is visible in ~2-3 days,
+        # so a 30-day "monthly cycle" cooldown would freeze the advisor
+        # through a real excursion. Wait just long enough to read the
+        # effect of the last change before suggesting another.
+        "cooldown_days": 3.0,
+        "dismiss_cooldown_days": 3.0,
         "correction_period_days": 30.0,
         "empirical_drift_pct": 50.0,
         "wc_settling_hours": 24.0,

@@ -431,10 +431,12 @@ def test_nitrate_defaults_present():
     assert d["default_eff_per_mL_per_100L"] < 0  # remover
     assert d["floor_value"] == 0.5
     assert d["value_unit"] == "ppm"
-    # Sparse-cadence defaults match Ca/Mg
+    # Sparse-cadence window matches Ca/Mg, but removers act fast (~2-3 days)
+    # so the cooldown is short — a 30-day cooldown would freeze the advisor
+    # through a real excursion.
     assert d["window_days"] == 90
     assert d["min_samples"] == 2
-    assert d["cooldown_days"] == 30.0
+    assert d["cooldown_days"] == 3.0
 
 
 def test_phosphate_defaults_present():
@@ -445,6 +447,8 @@ def test_phosphate_defaults_present():
     assert d["target_max"] == 0.10
     assert d["default_eff_per_mL_per_100L"] < 0
     assert d["floor_value"] == 0.03
+    # Fast-responding remover: short cooldown, same as nitrate.
+    assert d["cooldown_days"] == 3.0
 
 
 # ---------------------------------------------------------------------------

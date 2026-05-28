@@ -348,16 +348,22 @@ def empirical_potency_from_acks(
     window_days: int,
     min_samples: int,
     min_dose_change_mL: float,
+    spec_eff: float,
 ) -> tuple[float | None, str]:
-    """Estimate dKH per mL from the most recent acknowledged dose change.
+    """Estimate dKH (or ppm) per mL from the most recent acknowledged dose change.
 
     Across a clean dose change, consumption cancels:
         slope_after − slope_before = (dose_after − dose_before) × potency
     Returns (potency, basis). `potency` is None when:
       - there are no acks
       - the dose change was too small (< min_dose_change_mL)
-      - either side of the ack lacks `min_samples` KH-bearing snapshots
+      - either side of the ack lacks `min_samples` value-bearing snapshots
       - either slope can't be computed
+      - the empirical potency's sign disagrees with `spec_eff` — i.e. the
+        dose change moved the parameter the wrong way. Additive supplements
+        (spec_eff > 0) must raise the parameter; removers (spec_eff < 0) must
+        lower it. The returned potency keeps spec's sign, so the
+        empirical/spec ratio is always positive for both supplement types.
     The basis string explains which case applied (suitable for surfacing
     as the `empirical_potency_basis` attribute).
     """
@@ -391,10 +397,16 @@ def empirical_potency_from_acks(
         )
 
     potency = (slope_after - slope_before) / dose_change
-    if potency <= 0:
+    # The supplement must move the parameter in the direction its spec
+    # implies: additive supplements (spec_eff > 0) raise it, removers
+    # (spec_eff < 0) lower it. Reject empirical potency whose sign disagrees
+    # with spec — that means the dose change moved the parameter the wrong
+    # way (noise/confound), not a real potency signal.
+    if spec_eff == 0 or potency * spec_eff <= 0:
         return None, (
-            f"computed potency {potency:.4f} dKH/mL is non-positive — "
-            f"dose change in opposite direction to slope change "
+            f"computed potency {potency:+.4f} per mL disagrees in sign with "
+            f"spec ({spec_eff:+.4f}) — dose change moved the parameter "
+            f"opposite to expectation "
             f"(pre slope {slope_before:+.3f}, post slope {slope_after:+.3f}, "
             f"dose change {dose_change:+.2f} mL)"
         )
@@ -494,6 +506,7 @@ def compute_recommendation(
         window_days=cfg.window_days,
         min_samples=cfg.min_samples,
         min_dose_change_mL=cfg.empirical_min_dose_change_mL,
+        spec_eff=spec_eff,
     )
 
     # Latest ack / dismiss for cooldown tracking
@@ -519,7 +532,9 @@ def compute_recommendation(
     # _build calls so every exit path surfaces the diagnostic).
     empirical_to_spec_ratio: float | None = None
     spec_drift_warning = False
-    if empirical_potency is not None and spec_eff > 0:
+    if empirical_potency is not None and spec_eff != 0:
+        # Both have the same sign (the wrong-sign case is rejected upstream),
+        # so the ratio is positive for additive supplements and removers alike.
         empirical_to_spec_ratio = empirical_potency / spec_eff
         band = cfg.empirical_drift_pct / 100.0
         if not _within(empirical_to_spec_ratio, 1 - band, 1 + band):
