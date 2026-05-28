@@ -461,6 +461,12 @@ def _build_config(
                 defaults.get("empirical_drift_pct", 50.0),
             )
         ),
+        cooldown_override_pct=float(
+            cfg_get(
+                "cooldown_override_pct",
+                defaults.get("cooldown_override_pct", 50.0),
+            )
+        ),
         # Algorithm sees this as "spec_efficiency_dkh_per_mL_per_100L"
         # but the unit is param-specific (ppm/mL/100L for Ca, etc.).
         # The dataclass field name carries over from the alk advisor

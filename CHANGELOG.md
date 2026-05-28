@@ -2,6 +2,34 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.10 — Severe excursions override advisor cooldown
+
+**Tested against:** HA Core `2026.4.4` (dev).
+
+### Why
+
+Cooldown exists to stop the advisor re-dosing before the last change has had time to take effect. But it was an absolute gate: while a parameter sat *badly* out of band, the advisor still held and recommended nothing until the cooldown expired. Real case: phosphate at 0.15 ppm against a 0.06 ppm ceiling (2.5× over, with an active Redfield/cyano warning) was stuck holding because of a recent acknowledgment. Waiting out a cooldown is the wrong behaviour when a parameter is that far off.
+
+### What
+
+New `cooldown_override_pct` (default **50%**, applies to the alk advisor and all per-element advisors). When the median sits more than that percentage beyond the nearest target-band edge, cooldown is bypassed and a recommendation is made. The change is still **step-capped** (≤ `step_cap_pct` per step) and still **floor-guarded** (removers won't push a nutrient below its floor), so the override can't over-correct — it just stops the advisor from sitting idle through a severe excursion. The reason text flags `⚠ Cooldown overridden …`. Set `cooldown_override_pct` to `0` to restore the previous always-hold-in-cooldown behaviour.
+
+Example: PO4 median 0.15 ppm vs a 0.06 ppm ceiling is 150% beyond the edge → cooldown is overridden and the advisor recommends a (step-capped) AR-remover increase immediately, instead of waiting.
+
+### Tests
+
+Two new tests in `tests/test_advisor.py` (severe excursion overrides cooldown; `cooldown_override_pct=0` disables it).
+
+### Restart needed?
+
+Yes — algorithm change in the advisor. Reload the integration after upgrading.
+
+### Note
+
+This shipped a release behind its companions: the remover empirical-potency fix and the 30 d → 3 d remover cooldown landed in 0.5.9; this override was meant to bundle with them but missed the 0.5.9 merge.
+
+---
+
 ## 0.5.9 — Ignore bad readings, and per-element advisor remover fixes
 
 **Tested against:** HA Core `2026.4.4` (dev).

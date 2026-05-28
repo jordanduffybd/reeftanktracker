@@ -216,6 +216,46 @@ def test_dismiss_uses_shorter_cooldown():
     assert rec.suggested_dose_mL > 3.0
 
 
+def test_severe_excursion_overrides_cooldown():
+    """A median far outside the band (>50% beyond the edge) bypasses cooldown
+    and still recommends a (step-capped) change. Mild excursions inside that
+    margin keep holding — see test_cooldown_after_ack_blocks_new_suggestion
+    (kh=8.0, which is not >50% below the 8.5 floor)."""
+    now = _now()
+    # 8.5 floor; 50% below = 4.25. kh=4.0 is a severe excursion.
+    rec = compute_recommendation(
+        now=now,
+        snapshots=_stable(now, kh=4.0, dose=3.0, days=7),
+        current_dose_mL=3.0,
+        cfg=AdvisorConfig(cooldown_days=5, cooldown_override_pct=50.0),
+        acknowledgments=[Acknowledgment(
+            at=now - timedelta(days=2),
+            applied_value_mL=3.5, prev_value_mL=3.0,
+        )],
+    )
+    assert rec.cooldown_until is not None  # cooldown WAS active
+    assert rec.change_mL > 0.0             # ...but overridden → recommends a change
+    assert rec.suggested_dose_mL > 3.0
+    assert "Cooldown overridden" in rec.reason
+
+
+def test_severe_excursion_override_disabled_when_pct_zero():
+    """cooldown_override_pct=0 restores the always-hold-in-cooldown behaviour."""
+    now = _now()
+    rec = compute_recommendation(
+        now=now,
+        snapshots=_stable(now, kh=4.0, dose=3.0, days=7),
+        current_dose_mL=3.0,
+        cfg=AdvisorConfig(cooldown_days=5, cooldown_override_pct=0.0),
+        acknowledgments=[Acknowledgment(
+            at=now - timedelta(days=2),
+            applied_value_mL=3.5, prev_value_mL=3.0,
+        )],
+    )
+    assert rec.change_mL == 0.0
+    assert "cooldown" in rec.reason.lower()
+
+
 # ---------------------------------------------------------------------------
 # Stability rule 4 — step cap
 # ---------------------------------------------------------------------------
