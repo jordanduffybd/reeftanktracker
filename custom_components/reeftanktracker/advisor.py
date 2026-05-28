@@ -110,6 +110,14 @@ class AdvisorConfig:
     hysteresis_dkh: float = 0.1
     min_samples_after_event: int = 3
 
+    # Severe-excursion cooldown override. Cooldown exists to avoid re-dosing
+    # before the last change takes effect — but it shouldn't keep the advisor
+    # idle while the parameter is badly out of band. When the median sits
+    # beyond the nearest target-band edge by more than this percentage of that
+    # edge, cooldown is bypassed and a (still step-capped, still floor-guarded)
+    # recommendation is made. 0 disables the override.
+    cooldown_override_pct: float = 50.0
+
     # How long the user is expected to apply the change before the next
     # evaluation. Larger value → smaller daily-dose change (gentler).
     correction_period_days: float = 7.0
@@ -310,6 +318,22 @@ def _trend_days_outside_band(
 
 def _within(value: float, low: float, high: float) -> bool:
     return low <= value <= high
+
+
+def _severe_excursion(
+    median: float | None, low: float, high: float, override_pct: float,
+) -> bool:
+    """True when `median` sits beyond the nearest band edge by more than
+    `override_pct`% of that edge — a severe excursion that should bypass
+    cooldown. Returns False when the override is disabled (pct <= 0)."""
+    if median is None or override_pct <= 0:
+        return False
+    frac = override_pct / 100.0
+    if median > high:
+        return median > high * (1.0 + frac)
+    if median < low:
+        return median < low * (1.0 - frac)
+    return False
 
 
 def _is_within_wc_settling(
@@ -667,16 +691,26 @@ def compute_recommendation(
             ),
         )
 
-    # 3) Cooldown
+    # 3) Cooldown — unless the parameter is in a severe excursion, in which
+    # case waiting out the cooldown is worse than acting (the last change
+    # clearly wasn't enough). A severe excursion falls through to the normal
+    # hysteresis/trend/compute path; the step cap + floor guard still prevent
+    # over-correction.
+    cooldown_overridden = False
     if in_cooldown and cooldown_until is not None:
-        return _build(
-            state=current_dose_mL, suggested=current_dose_mL,
-            confidence="medium",
-            reason=(
-                f"In cooldown until {cooldown_until.isoformat()} after "
-                f"recent acknowledgment/dismissal."
-            ),
-        )
+        if _severe_excursion(
+            kh_median, cfg.target_min, cfg.target_max, cfg.cooldown_override_pct
+        ):
+            cooldown_overridden = True
+        else:
+            return _build(
+                state=current_dose_mL, suggested=current_dose_mL,
+                confidence="medium",
+                reason=(
+                    f"In cooldown until {cooldown_until.isoformat()} after "
+                    f"recent acknowledgment/dismissal."
+                ),
+            )
 
     # 4) Hysteresis — value median inside the target band ± hysteresis = no action
     band_low = cfg.target_min - cfg.hysteresis_dkh
@@ -744,7 +778,18 @@ def compute_recommendation(
             f"{cfg.value_unit}/day at {obs_dose_median:.2f} mL/day."
         )
 
+    override_note = ""
+    if cooldown_overridden:
+        override_note = (
+            f"⚠ Cooldown overridden — {cfg.param_label} median "
+            f"{kh_median:.2f} {cfg.value_unit} is a severe excursion "
+            f"(>{cfg.cooldown_override_pct:.0f}% beyond target band "
+            f"{cfg.target_min}–{cfg.target_max}); recommending a change "
+            f"despite the recent acknowledgment. "
+        )
+
     reason = (
+        f"{override_note}"
         f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
         f"{'below' if delta_kh > 0 else 'above'} target midpoint "
         f"{midpoint:.2f} (delta {-delta_kh:+.2f}); spec potency "
