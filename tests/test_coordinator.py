@@ -907,3 +907,47 @@ async def test_latest_reading_skips_excluded(hass):
     # include_excluded restores the original behaviour
     forced = coord.latest_reading("kh", include_excluded=True)
     assert forced["value"] == 99.0
+
+
+# ---------------------------------------------------------------------------
+# Statistics live-window guard (0.5.12)
+#
+# `ReefLatestSensor` sets state_class=measurement, so HA's recorder already
+# compiles hourly statistics for `sensor.<param>_latest`. Importing into the
+# same statistic_id for the same hour raced the recorder and produced hourly
+# "UNIQUE constraint failed: statistics.metadata_id, statistics.start_ts"
+# errors in production on HA 2026.7.2. The recorder owns the present; the
+# import path owns the past.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_is_backfillable_rejects_recent_samples(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    assert coord._is_backfillable(now) is False
+    assert coord._is_backfillable(now - timedelta(minutes=30)) is False
+    # Just inside the boundary — still the recorder's hour.
+    assert coord._is_backfillable(
+        now - coord.LIVE_STATS_WINDOW + timedelta(minutes=1)
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_is_backfillable_accepts_historical_samples(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    now = datetime.now(timezone.utc)
+    assert coord._is_backfillable(now - timedelta(days=1)) is True
+    assert coord._is_backfillable(
+        datetime(2023, 4, 1, tzinfo=timezone.utc)
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_is_backfillable_treats_naive_timestamps_as_utc(hass):
+    coord = ReefDataCoordinator(hass)
+    await coord.async_load()
+    naive_old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
+    naive_now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert coord._is_backfillable(naive_old) is True
+    assert coord._is_backfillable(naive_now) is False

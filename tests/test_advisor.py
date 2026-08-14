@@ -1086,3 +1086,113 @@ def test_as_attributes_serializes_datetimes_to_iso():
     # Confidence and reason present
     assert "confidence" in attrs
     assert "reason" in attrs
+
+
+# ---------------------------------------------------------------------------
+# Hysteresis look-ahead (0.5.12)
+#
+# Hysteresis stops the advisor oscillating around the band edges, but on its
+# own it also hides a slow sustained drift: a median parked just inside
+# `target_min - hysteresis` with a clearly negative slope was held forever
+# until it finally fell out of band. These cover the escape hatch and,
+# importantly, the cases that must STILL hold.
+# ---------------------------------------------------------------------------
+def _sloped(
+    now: datetime, start_kh: float, per_day: float, dose: float, days: int,
+) -> list[Snapshot]:
+    """Snapshots on a straight line of `per_day` dKH/day, ending at `now`."""
+    return [
+        Snapshot(
+            at=now - timedelta(days=days - 1 - i),
+            kh=round(start_kh + per_day * i, 4),
+            dose_mL=dose,
+        )
+        for i in range(days)
+    ]
+
+
+def test_lookahead_acts_on_sustained_drift_inside_hysteresis_band():
+    """Jordan's production case: median 8.44 (inside the 8.4 hysteresis
+    floor) but falling ~0.056 dKH/day. Pre-0.5.12 this held indefinitely.
+    """
+    now = _now()
+    # 7 days descending through 8.44 at -0.056/day.
+    snaps = _sloped(now, start_kh=8.61, per_day=-0.056, dose=7.7, days=7)
+    rec = compute_recommendation(
+        now=now, snapshots=snaps, current_dose_mL=7.7, cfg=AdvisorConfig(),
+    )
+    assert rec.projected_breach is True
+    assert rec.projection_days == 7.0
+    # Falling KH → recommend MORE alk supplement.
+    assert rec.suggested_dose_mL > 7.7
+    assert rec.change_mL > 0
+    assert "Trending out of band" in rec.reason
+
+
+def test_lookahead_does_not_fire_on_flat_value_inside_hysteresis():
+    """Dead-flat 8.4 with target_min 8.5 must still hold — no trend, so
+    there is nothing to get ahead of. Guards against projecting relative
+    to the target band instead of the hysteresis band.
+    """
+    now = _now()
+    rec = compute_recommendation(
+        now=now, snapshots=_stable(now, kh=8.4, dose=3.0, days=7),
+        current_dose_mL=3.0, cfg=AdvisorConfig(),
+    )
+    assert rec.projected_breach is False
+    assert rec.suggested_dose_mL == 3.0
+    assert rec.change_mL == 0.0
+
+
+def test_lookahead_does_not_bypass_trend_gate_when_already_out_of_band():
+    """A median already outside the hysteresis band must keep going through
+    the normal consecutive-days trend gate — the look-ahead is an escape
+    hatch for the hysteresis hold only, not a general bypass.
+    """
+    now = _now()
+    days = [8.7, 8.0, 8.0, 8.0, 8.0, 8.0, 8.7]   # median 8.0, trend tail 0
+    snaps = [
+        Snapshot(at=now - timedelta(days=6 - i), kh=v, dose_mL=3.0)
+        for i, v in enumerate(days)
+    ]
+    rec = compute_recommendation(
+        now=now, snapshots=snaps, current_dose_mL=3.0, cfg=AdvisorConfig(),
+    )
+    assert rec.suggested_dose_mL == 3.0
+    assert "trending" in rec.reason
+
+
+def test_lookahead_disabled_restores_pure_hysteresis():
+    """hysteresis_lookahead_days=0 must reproduce the pre-0.5.12 hold."""
+    now = _now()
+    snaps = _sloped(now, start_kh=8.61, per_day=-0.056, dose=7.7, days=7)
+    rec = compute_recommendation(
+        now=now, snapshots=snaps, current_dose_mL=7.7,
+        cfg=AdvisorConfig(hysteresis_lookahead_days=0),
+    )
+    assert rec.projected_breach is False
+    assert rec.suggested_dose_mL == 7.7
+    assert "holding current dose" in rec.reason
+
+
+def test_lookahead_rising_drift_reduces_dose():
+    """Symmetry: drifting up out of the band should cut the dose."""
+    now = _now()
+    snaps = _sloped(now, start_kh=8.79, per_day=+0.056, dose=7.7, days=7)
+    rec = compute_recommendation(
+        now=now, snapshots=snaps, current_dose_mL=7.7, cfg=AdvisorConfig(),
+    )
+    assert rec.projected_breach is True
+    assert rec.suggested_dose_mL < 7.7
+
+
+def test_lookahead_change_still_respects_step_cap():
+    """The escape hatch must not bypass the ±step-cap safety rail."""
+    now = _now()
+    snaps = _sloped(now, start_kh=8.75, per_day=-0.09, dose=7.7, days=7)
+    rec = compute_recommendation(
+        now=now, snapshots=snaps, current_dose_mL=7.7,
+        cfg=AdvisorConfig(step_cap_pct=10.0),
+    )
+    assert rec.projected_breach is True
+    assert abs(rec.change_mL) <= 7.7 * 0.10 + 1e-9

@@ -78,6 +78,17 @@ After install, configure via Settings → Devices & Services → Reef Tank Track
 - **Alk dosing advisor** — enable, pick alk heads, supplement profile, target band, tunables
 - **Calcium / Magnesium / Nitrate / Phosphate dosing advisors** — same shape, per-element
 
+### Recorder retention
+
+The advisor's empirical-potency learner reads up to `OPT_WINDOW_DAYS` (default 7) of dose / KH history from HA's recorder. The per-element advisors use `OPT_WINDOW_DAYS` defaults up to 90 days. HA's default recorder retention is **10 days** — short enough that the per-element advisors can't see their own full window. To use the full advisor windows AND retain enough trend data to answer "why has consumption changed over the last two months", bump retention in `configuration.yaml`:
+
+```yaml
+recorder:
+  purge_keep_days: 90
+```
+
+(60 also works if disk is tight. Numeric advisor data is small — a 90-day bump typically adds <100 MB.) Restart HA to apply.
+
 ## Companion repos
 
 - **[kh-keeper-bridge](https://github.com/jordanduffybd/kh-keeper-bridge)** — Home Assistant add-on that bridges Reef Factory KH Keeper readings + cuvette empty/fill/measure procedures into MQTT auto-discovered entities

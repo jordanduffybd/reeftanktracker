@@ -24,6 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 # Recorder/statistics imports are wrapped because they're an HA-internal
 # API surface that occasionally moves; we degrade gracefully if the
@@ -45,6 +46,7 @@ from .const import (
     EVENT_ADVISOR_ACKNOWLEDGED,
     EVENT_ADVISOR_DISMISSED,
     EVENT_ADVISOR_SNAPSHOT_CAPTURED,
+    EVENT_CALIBRATION_RECORDED,
     EVENT_DEMAND_CHANGE_LOGGED,
     EVENT_WATER_CHANGE_LOGGED,
     HABITATS,
@@ -242,6 +244,17 @@ class ReefDataCoordinator:
                     "dismissals": [],        # [{at, suggested_value_mL}]
                     "demand_changes": [],    # [{at, reason, expected_direction, magnitude_hint_pct}]
                     "water_changes": [],     # [{at, percent, salt_mix_kh, notes}]
+                    # Calibration events from the KH Keeper bridge — every
+                    # time the device's `adjustment` offset changes, the
+                    # bridge publishes one event and reeftank records it
+                    # here. Each entry: {at, prev, new, delta, source,
+                    # hanna_value, serial}. Used to: (a) skip snapshots
+                    # in a settling window around the event so the alk
+                    # advisor doesn't attribute the resulting KH step-
+                    # change to dose, and (b) trigger an empirical-
+                    # potency reset (the step contaminates the slope
+                    # derivation used by the empirical learner).
+                    "calibration_events": [],
                 },
                 # Persisted state of the dashboard's inline form fields,
                 # so values survive HA restarts and dashboard reloads.
@@ -596,6 +609,28 @@ class ReefDataCoordinator:
                 reading.parameter,
             )
             return
+        # The recorder owns the present; we own the past.
+        #
+        # `ReefLatestSensor` carries `state_class = measurement`, so HA's
+        # recorder already compiles an hourly statistic for this entity from
+        # its live state. Importing into the same statistic_id for the same
+        # hour makes two writers race for one row and the insert is rejected:
+        #     UNIQUE constraint failed:
+        #       statistics.metadata_id, statistics.start_ts
+        # which HA 2026.x surfaces as an hourly "Blocked attempt to insert
+        # duplicated statistic rows" ERROR. The import exists solely so that
+        # historical readings (CSV/ICP imports with old sample dates) land at
+        # their true sample time instead of piling up at "now" — for a
+        # just-taken reading the recorder's own value is already correct and
+        # our import adds nothing. So skip anything the recorder is actively
+        # covering.
+        if not self._is_backfillable(dt):
+            _LOGGER.debug(
+                "Reading for %s sampled at %s is inside the recorder's live "
+                "window — leaving statistics to the recorder",
+                statistic_id, dt,
+            )
+            return
         # Round to the hour — HA stores stats hourly.
         dt = dt.replace(minute=0, second=0, microsecond=0)
         metadata = StatisticMetaData(
@@ -621,6 +656,22 @@ class ReefDataCoordinator:
                 "async_import_statistics failed for %s @ %s: %s",
                 statistic_id, dt, exc,
             )
+
+    def _is_backfillable(self, sample_at: datetime) -> bool:
+        """True when `sample_at` is old enough that the recorder is not
+        already compiling statistics for that hour from live state.
+
+        Anything newer than `LIVE_STATS_WINDOW` belongs to the recorder —
+        see the long comment in `_import_statistic` for why writing there
+        produces UNIQUE-constraint errors. The window is deliberately
+        generous (a couple of hours rather than one) because recorder
+        compilation lags the hour boundary and clocks drift.
+        """
+        if sample_at.tzinfo is None:
+            sample_at = sample_at.replace(tzinfo=timezone.utc)
+        return sample_at < (
+            datetime.now(timezone.utc) - self.LIVE_STATS_WINDOW
+        )
 
     def latest_reading(
         self, parameter: str, *, include_excluded: bool = False,
@@ -862,10 +913,17 @@ class ReefDataCoordinator:
 
             stats: list[StatisticData] = []
             unit: str | None = None
+            skipped_live = 0
             for r in rs:
                 try:
                     dt = datetime.fromisoformat(r["sample_taken_at"])
                 except (ValueError, TypeError, KeyError):
+                    continue
+                # Same rule as `_import_statistic` — never write into hours
+                # the recorder is already compiling from live state, or every
+                # backfill run re-triggers the duplicate-row errors.
+                if not self._is_backfillable(dt):
+                    skipped_live += 1
                     continue
                 dt = dt.replace(minute=0, second=0, microsecond=0)
                 stats.append(StatisticData(
@@ -876,6 +934,12 @@ class ReefDataCoordinator:
                 ))
                 if unit is None and r.get("unit"):
                     unit = r["unit"]
+            if skipped_live:
+                _LOGGER.warning(
+                    "Backfill: %s — skipped %d reading(s) inside the "
+                    "recorder's live window (already covered by the "
+                    "recorder's own statistics)", pid, skipped_live,
+                )
             if not stats:
                 continue
             metadata = StatisticMetaData(
@@ -1022,10 +1086,23 @@ class ReefDataCoordinator:
     async def async_record_advisor_snapshot(
         self, param_id: str, *, at: str, kh: float | None,
         dose_mL: float | None,
+        kh_kind: str | None = None,
+        kh_samples: int | None = None,
     ) -> None:
-        """Append a daily snapshot. Caps history at 90 entries (rolling)."""
+        """Append a daily snapshot. Caps history at 90 entries (rolling).
+
+        `kh_kind` ("manual" | "auto" | "live") and `kh_samples` record how
+        the day's value was derived — see `alk_advisor._daily_value`. Both
+        are optional and omitted from the entry when None, so snapshots
+        written by older versions stay valid and the algorithm (which only
+        reads `at`/`kh`/`dose_mL`) is unaffected.
+        """
         blob = self._advisor_blob(param_id)
-        entry = {"at": at, "kh": kh, "dose_mL": dose_mL}
+        entry: dict[str, Any] = {"at": at, "kh": kh, "dose_mL": dose_mL}
+        if kh_kind is not None:
+            entry["kh_kind"] = kh_kind
+        if kh_samples is not None:
+            entry["kh_samples"] = kh_samples
         blob["snapshots"].append(entry)
         # Keep ~3 months — the algorithm only looks at `window_days`
         # but extra history is cheap and useful for diagnostics.
@@ -1044,20 +1121,44 @@ class ReefDataCoordinator:
 
     async def async_record_advisor_acknowledgment(
         self, param_id: str, *, applied_value_mL: float, prev_value_mL: float,
+        implicit: bool = False,
+        suggested_value_mL: float | None = None,
+        tolerance_pct: float | None = None,
     ) -> None:
+        """Record an acknowledgment.
+
+        `implicit=True` flags acks inferred from the user changing the
+        doser's `_daily_dose` entity directly (e.g. in the ReefBeat app)
+        rather than clicking the dashboard's Acknowledge button. Stored
+        so empirical-potency learning can weight implicit acks vs
+        explicit ones — and so the dashboard can show "(auto-detected)"
+        next to recent implicit acks. `suggested_value_mL` /
+        `tolerance_pct` are diagnostic for implicit acks; explicit
+        button presses leave them None.
+        """
         blob = self._advisor_blob(param_id)
         entry = {
             "at": _now_iso(),
             "applied_value_mL": float(applied_value_mL),
             "prev_value_mL": float(prev_value_mL),
         }
+        if implicit:
+            entry["implicit"] = True
+            if suggested_value_mL is not None:
+                entry["suggested_value_mL"] = float(suggested_value_mL)
+            if tolerance_pct is not None:
+                entry["tolerance_pct"] = float(tolerance_pct)
         blob["acknowledgments"].append(entry)
         await self.async_save()
         async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, param_id)
+        msg = (
+            f"Acknowledged{' (auto-detected)' if implicit else ''}: "
+            f"applied {applied_value_mL} mL/day "
+            f"(was {prev_value_mL} mL/day)"
+        )
         self._emit_advisor_event(
             EVENT_ADVISOR_ACKNOWLEDGED,
-            f"Acknowledged: applied {applied_value_mL} mL/day "
-            f"(was {prev_value_mL} mL/day)",
+            msg,
             {"parameter": param_id, **entry},
         )
 
@@ -1101,6 +1202,117 @@ class ReefDataCoordinator:
             msg,
             {"parameter": param_id, **entry},
         )
+
+    # ------------------------------------------------------------------
+    # KH Keeper calibration events
+    # ------------------------------------------------------------------
+    # Window around a calibration event where alk snapshots are excluded
+    # from the empirical-potency slope derivation. A calibration changes
+    # the displayed KH by Δadjustment instantly — if the advisor sees that
+    # step-change in a snapshot, it'll attribute the entire jump to dose
+    # and explode the empirical potency. 24h either side is enough for
+    # one full daily measurement cadence to settle.
+    CALIBRATION_SETTLING_HOURS = 24.0
+
+    # Readings sampled inside this window are left entirely to HA's recorder,
+    # which already compiles hourly statistics for the `*_latest` entities
+    # (they carry `state_class = measurement`). Importing there collides on
+    # (metadata_id, start_ts). See `_import_statistic`.
+    LIVE_STATS_WINDOW = timedelta(hours=2)
+
+    async def async_record_calibration_event(self, event: dict[str, Any]) -> None:
+        """Record a KH Keeper calibration event under advisor.kh and,
+        if a Hanna value was supplied, also record it as a manual KH
+        reading. Idempotent — events from the retained `last_calibration`
+        topic on startup are de-duped by (serial, ts).
+
+        Expected event shape (from kh-keeper-bridge 0.1.15+):
+            {prev, new, delta, ts, source, hanna_value, serial}
+        """
+        ts = event.get("ts") or _now_iso()
+        serial = event.get("serial") or "unknown"
+        entry = {
+            "at": ts,
+            "prev": event.get("prev"),
+            "new": event.get("new"),
+            "delta": event.get("delta"),
+            "source": event.get("source") or "device",
+            "hanna_value": event.get("hanna_value"),
+            "serial": serial,
+        }
+        blob = self._advisor_blob("kh")
+        events_list = blob.setdefault("calibration_events", [])
+        # De-dupe: retained MQTT topic re-fires on every restart, so if
+        # we already have an event with the same (serial, ts) skip the
+        # entire record path (including the Hanna reading).
+        for existing in events_list:
+            if existing.get("serial") == serial and existing.get("at") == ts:
+                _LOGGER.debug(
+                    "Calibration event %s/%s already recorded; skipping", serial, ts,
+                )
+                return
+        events_list.append(entry)
+        await self.async_save()
+
+        # The Hanna value is the manual ground-truth the user measured
+        # to drive the calibration — record it as a manual KH reading so
+        # the variance-aware reading picker has a high-confidence point.
+        # Only `ha_drop_test`-sourced events carry one; device-side
+        # calibrations don't expose the user's actual test reading.
+        hanna = entry["hanna_value"]
+        if hanna is not None:
+            try:
+                await self.async_record_reading(
+                    parameter="kh",
+                    value=float(hanna),
+                    unit="dKH",
+                    method="Hanna ULR (KH Keeper drop test)",
+                    source=SOURCE_MANUAL,
+                    sample_taken_at=ts,
+                    notes=(
+                        f"Auto-recorded from KH Keeper calibration "
+                        f"(adjustment {entry['prev']:+.2f} → {entry['new']:+.2f})"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Calibration event recorded but Hanna reading insertion "
+                    "failed: %s", exc,
+                )
+
+        _LOGGER.info(
+            "Calibration event recorded: serial=%s prev=%+.2f new=%+.2f "
+            "delta=%+.2f source=%s hanna=%s",
+            serial, entry["prev"], entry["new"], entry["delta"],
+            entry["source"], entry["hanna_value"],
+        )
+        async_dispatcher_send(self.hass, SIGNAL_ADVISOR_UPDATED, "kh")
+        self.hass.bus.async_fire(EVENT_CALIBRATION_RECORDED, entry)
+
+    def is_in_calibration_settling_window(self, at_iso: str) -> bool:
+        """Return True if `at_iso` falls within ±CALIBRATION_SETTLING_HOURS
+        of any recorded calibration event. Used by the alk snapshotter
+        to skip captures that would otherwise contaminate the empirical-
+        potency slope derivation."""
+        try:
+            at = dt_util.parse_datetime(at_iso)
+        except (TypeError, ValueError):
+            return False
+        if at is None:
+            return False
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=dt_util.UTC)
+        window = timedelta(hours=self.CALIBRATION_SETTLING_HOURS)
+        blob = self._advisor_blob("kh")
+        for entry in blob.get("calibration_events", []):
+            ev_at = dt_util.parse_datetime(entry.get("at") or "")
+            if ev_at is None:
+                continue
+            if ev_at.tzinfo is None:
+                ev_at = ev_at.replace(tzinfo=dt_util.UTC)
+            if abs((at - ev_at).total_seconds()) <= window.total_seconds():
+                return True
+        return False
 
     async def async_record_water_change(
         self, param_id: str, *, percent: float,

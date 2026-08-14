@@ -21,12 +21,15 @@ The sensor itself only outputs a recommendation when `enabled` is true.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
+from statistics import median
 from typing import Any
 
 from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers.event import async_track_time_change
+
+from .const import SOURCE_AUTO
 
 from .advisor import (
     Acknowledgment,
@@ -59,6 +62,7 @@ OPT_COOLDOWN_DAYS = "advisor_cooldown_days"
 OPT_DISMISS_COOLDOWN_DAYS = "advisor_dismiss_cooldown_days"
 OPT_STEP_CAP_PCT = "advisor_step_cap_pct"
 OPT_HYSTERESIS = "advisor_hysteresis_dkh"
+OPT_HYSTERESIS_LOOKAHEAD_DAYS = "advisor_hysteresis_lookahead_days"
 OPT_MIN_SAMPLES_AFTER_EVENT = "advisor_min_samples_after_event"
 OPT_CORRECTION_PERIOD_DAYS = "advisor_correction_period_days"
 OPT_SNAPSHOT_HOUR = "advisor_snapshot_hour"        # 0-23, local time
@@ -166,6 +170,7 @@ DEFAULTS: dict[str, Any] = {
     OPT_DISMISS_COOLDOWN_DAYS: 2.0,
     OPT_STEP_CAP_PCT: 10.0,
     OPT_HYSTERESIS: 0.1,
+    OPT_HYSTERESIS_LOOKAHEAD_DAYS: 7.0,
     OPT_MIN_SAMPLES_AFTER_EVENT: 3,
     OPT_CORRECTION_PERIOD_DAYS: 7.0,
     OPT_SNAPSHOT_HOUR: 23,
@@ -288,6 +293,9 @@ def _build_advisor_config(
         dismiss_cooldown_days=float(_opt(coordinator, OPT_DISMISS_COOLDOWN_DAYS)),
         step_cap_pct=float(_opt(coordinator, OPT_STEP_CAP_PCT)),
         hysteresis_dkh=float(_opt(coordinator, OPT_HYSTERESIS)),
+        hysteresis_lookahead_days=float(
+            _opt(coordinator, OPT_HYSTERESIS_LOOKAHEAD_DAYS)
+        ),
         min_samples_after_event=int(_opt(coordinator, OPT_MIN_SAMPLES_AFTER_EVENT)),
         correction_period_days=float(_opt(coordinator, OPT_CORRECTION_PERIOD_DAYS)),
         empirical_drift_pct=float(_opt(coordinator, OPT_EMPIRICAL_DRIFT_PCT)),
@@ -338,6 +346,66 @@ def _sum_dose_mL(hass: HomeAssistant, entity_ids: list[str]) -> float | None:
     return total
 
 
+def _daily_value(
+    coordinator: ReefDataCoordinator,
+    param_id: str,
+    *,
+    window_end: datetime,
+    window_hours: float = 24.0,
+) -> tuple[float | None, str | None, int, int]:
+    """Aggregate one day's readings into a single snapshot value.
+
+    Two rules, both deliberate:
+
+    1. **Use every reading in the window, not an instantaneous sample.**
+       The KH Keeper's test cadence is user-configurable (Jordan runs
+       anywhere from 1 to 4 tests/day). Reading the source entity's
+       current state at snapshot time throws away every test but the last
+       and makes the snapshot hostage to whenever the last test happened
+       to land. Taking the median over the window uses all of them and
+       shrugs off a single bad titration.
+
+    2. **Manual/ICP readings override auto readings.** A Hanna titration
+       is materially more accurate than the Keeper's colourimetric
+       result, so when both exist in the same window we use the manual
+       values *alone* rather than averaging a precise measurement
+       together with a less precise one. ICP counts as manual here — it's
+       lab work.
+
+    Returns `(value, kind, n_manual, n_auto)`, where `kind` is
+    ``"manual"``, ``"auto"`` or ``None`` when the window held no usable
+    readings at all.
+    """
+    window_start = window_end - timedelta(hours=window_hours)
+    manual: list[float] = []
+    auto: list[float] = []
+
+    for r in coordinator.readings_for(param_id):
+        raw_at = r.get("sample_taken_at")
+        try:
+            at = datetime.fromisoformat(raw_at)
+        except (TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if not (window_start < at <= window_end):
+            continue
+        value = r.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if r.get("source") == SOURCE_AUTO:
+            auto.append(float(value))
+        else:
+            # manual + icp — both are ground truth relative to the probe
+            manual.append(float(value))
+
+    if manual:
+        return median(manual), "manual", len(manual), len(auto)
+    if auto:
+        return median(auto), "auto", 0, len(auto)
+    return None, None, 0, 0
+
+
 # ---------------------------------------------------------------------------
 # Daily snapshotter — captures one snapshot/day at the configured local time
 # ---------------------------------------------------------------------------
@@ -384,18 +452,47 @@ class AlkAdvisorSnapshotter:
             _LOGGER.debug("Snapshot skipped — alk heads or kh_source not configured")
             return
 
-        kh = _read_float_state(self._hass, kh_source)
+        now = datetime.now(timezone.utc).astimezone()
+        # Aggregate the whole day rather than sampling the source entity's
+        # instantaneous state — see `_daily_value` for why (multi-test days,
+        # and manual Hanna titrations overriding the Keeper).
+        kh, kh_kind, n_manual, n_auto = _daily_value(
+            self._coordinator, self.PARAM_ID, window_end=now,
+        )
+        if kh is None:
+            # Nothing recorded in the window. Fall back to the configured
+            # source entity's current state so installs that don't route the
+            # KH source through an auto-source (and therefore have no stored
+            # readings) keep working exactly as before.
+            kh = _read_float_state(self._hass, kh_source)
+            kh_kind = "live" if kh is not None else None
         dose_mL = _sum_dose_mL(self._hass, alk_heads)
+        at = now.isoformat()
+        # Skip if we're inside a KH Keeper calibration settling window.
+        # A calibration changes the displayed KH by Δadjustment instantly,
+        # so a snapshot captured here would attribute that step-change
+        # to dose and blow up empirical_potency. The bridge's calibration
+        # listener already inserted a Hanna manual reading at the event
+        # time, so we don't lose ground-truth.
+        if self._coordinator.is_in_calibration_settling_window(at):
+            _LOGGER.info(
+                "Alk snapshot skipped (kh=%s dose_mL=%s) — inside KH Keeper "
+                "calibration settling window", kh, dose_mL,
+            )
+            return
         # We persist even when one side is None so the gap is visible in
         # storage; the algorithm tolerates None entries.
         await self._coordinator.async_record_advisor_snapshot(
             self.PARAM_ID,
-            at=datetime.now(timezone.utc).astimezone().isoformat(),
+            at=at,
             kh=kh, dose_mL=dose_mL,
+            kh_kind=kh_kind,
+            kh_samples=(n_manual + n_auto) or None,
         )
         _LOGGER.info(
-            "Alk snapshot captured: kh=%s dose_mL=%s (heads=%d)",
-            kh, dose_mL, len(alk_heads),
+            "Alk snapshot captured: kh=%s (%s, %d manual + %d auto reading(s)) "
+            "dose_mL=%s (heads=%d)",
+            kh, kh_kind or "none", n_manual, n_auto, dose_mL, len(alk_heads),
         )
 
 

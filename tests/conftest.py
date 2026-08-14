@@ -145,6 +145,15 @@ def _install_ha_stubs() -> None:
     util_dt = types.ModuleType("homeassistant.util.dt")
     from datetime import datetime, timezone as _tz
     util_dt.utcnow = lambda: datetime.now(_tz.utc)
+    util_dt.UTC = _tz.utc
+    def _parse_datetime(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s)
+        except (TypeError, ValueError):
+            return None
+    util_dt.parse_datetime = _parse_datetime
     util_pkg.dt = util_dt
     sys.modules["homeassistant.util"] = util_pkg
     sys.modules["homeassistant.util.dt"] = util_dt

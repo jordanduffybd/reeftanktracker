@@ -110,6 +110,20 @@ class AdvisorConfig:
     hysteresis_dkh: float = 0.1
     min_samples_after_event: int = 3
 
+    # Hysteresis look-ahead. Hysteresis exists to stop the advisor
+    # oscillating around the band edges — but on its own it also hides a
+    # slow, sustained drift: a median sitting just inside `target_min -
+    # hysteresis` with a clearly negative slope would be held indefinitely
+    # until it finally fell out of band, by which point the excursion has
+    # already happened.
+    #
+    # When the observed slope projects the median outside the *target
+    # band* (not the hysteresis band) within this many days, the
+    # hysteresis hold is skipped and a recommendation is computed. The
+    # step cap, floor guard and cooldown all still apply, so the response
+    # stays gentle. 0 disables the look-ahead (pure hysteresis).
+    hysteresis_lookahead_days: float = 7.0
+
     # Severe-excursion cooldown override. Cooldown exists to avoid re-dosing
     # before the last change takes effect — but it shouldn't keep the advisor
     # idle while the parameter is badly out of band. When the median sits
@@ -217,6 +231,15 @@ class Recommendation:
     # prepends a warning to `reason`.
     redfield_ratio: float | None = None
     redfield_warning: bool = False
+    # Hysteresis look-ahead diagnostics. `projected_value` is the median
+    # extrapolated `projection_days` forward along the observed slope.
+    # `projected_breach` is True when that projection leaves the target
+    # band — which is what lets a recommendation through the hysteresis
+    # hold. Both None/False when the look-ahead is disabled or the slope
+    # is undefined.
+    projected_value: float | None = None
+    projection_days: float | None = None
+    projected_breach: bool = False
 
     def as_attributes(self) -> dict[str, Any]:
         """Serialize for Home Assistant `extra_state_attributes`."""
@@ -261,6 +284,9 @@ class Recommendation:
             "samples_excluded_for_wc": self.samples_excluded_for_wc,
             "redfield_ratio": self.redfield_ratio,
             "redfield_warning": self.redfield_warning,
+            "projected_value": self.projected_value,
+            "projection_days": self.projection_days,
+            "projected_breach": self.projected_breach,
         }
 
 
@@ -516,6 +542,34 @@ def compute_recommendation(
     dose_values = [s.dose_mL for s in snaps if s.dose_mL is not None]
     obs_dose_median = median(dose_values) if dose_values else None
 
+    # Hysteresis look-ahead. Extrapolate the median forward along the
+    # observed slope and check whether it leaves the HYSTERESIS band —
+    # deliberately the hysteresis band, not the narrower target band.
+    #
+    # Projecting against the target band would misfire on a value that is
+    # merely parked between the two bands with no trend at all: a dead-flat
+    # 8.4 with target_min 8.5 "projects" 8.4, which is outside the target
+    # band, and we'd recommend a change on a tank that is not moving. Using
+    # the hysteresis band means the projection only breaches when the slope
+    # is genuinely large enough to carry the value clear of the hold zone
+    # inside the look-ahead window — which is the situation hysteresis is
+    # wrongly masking. See `AdvisorConfig.hysteresis_lookahead_days`.
+    hyst_low = cfg.target_min - cfg.hysteresis_dkh
+    hyst_high = cfg.target_max + cfg.hysteresis_dkh
+    projection_days: float | None = None
+    projected_value: float | None = None
+    projected_breach = False
+    if (
+        kh_median is not None
+        and obs_slope is not None
+        and cfg.hysteresis_lookahead_days > 0
+    ):
+        projection_days = float(cfg.hysteresis_lookahead_days)
+        projected_value = round(
+            kh_median + obs_slope * projection_days, 3,
+        )
+        projected_breach = not _within(projected_value, hyst_low, hyst_high)
+
     # Materialize acknowledgments once (caller may pass a generator).
     acks_list = list(acknowledgments)
 
@@ -641,6 +695,9 @@ def compute_recommendation(
                 round(days_since_wc, 2) if days_since_wc is not None else None
             ),
             samples_excluded_for_wc=samples_excluded_for_wc,
+            projected_value=projected_value,
+            projection_days=projection_days,
+            projected_breach=projected_breach,
         )
 
     # ------------------------------------------------------------------
@@ -712,11 +769,21 @@ def compute_recommendation(
                 ),
             )
 
-    # 4) Hysteresis — value median inside the target band ± hysteresis = no action
-    band_low = cfg.target_min - cfg.hysteresis_dkh
-    band_high = cfg.target_max + cfg.hysteresis_dkh
+    # 4) Hysteresis — value median inside the target band ± hysteresis = no
+    # action, UNLESS the observed slope projects a breach of the target band
+    # within `hysteresis_lookahead_days`. Without that escape hatch a slow
+    # sustained drift sits invisible just inside the hysteresis band until it
+    # finally falls out, which is exactly the excursion we're meant to prevent.
+    band_low, band_high = hyst_low, hyst_high
     assert kh_median is not None  # min_samples gate ensures this
-    if _within(kh_median, band_low, band_high):
+    in_hysteresis_band = _within(kh_median, band_low, band_high)
+    # The look-ahead is an escape hatch for the hysteresis hold *only*. A
+    # median already outside the hysteresis band never reaches the hold, so
+    # it must keep going through the normal trend gate below — otherwise a
+    # flat, long-standing excursion would skip the persistence requirement
+    # purely because its projection is also out of band.
+    lookahead_override = in_hysteresis_band and projected_breach
+    if in_hysteresis_band and not lookahead_override:
         conf = "low" if calibration_warning else "high"
         suffix = (
             " (calibration overdue — input reliability questionable)"
@@ -733,19 +800,29 @@ def compute_recommendation(
             ),
         )
 
-    # 5) Trend rule — must be persistently outside the band
-    trend_days = _trend_days_outside_band(snaps, cfg.target_min, cfg.target_max)
-    if trend_days < cfg.min_trend_days:
-        return _build(
-            state=current_dose_mL, suggested=current_dose_mL,
-            confidence="medium",
-            reason=(
-                f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
-                f"outside target band, but only {trend_days} "
-                f"consecutive day(s) trending — "
-                f"need {cfg.min_trend_days} before adjusting."
-            ),
+    # 5) Trend rule — must be persistently outside the band.
+    #
+    # Skipped when we arrived here via a projected breach: by definition the
+    # median is still inside the band in that case, so consecutive-days-outside
+    # is 0 and this gate would always block, permanently defeating the
+    # look-ahead. The slope driving the projection is already computed across
+    # the whole window (min_samples enforced above), so it carries its own
+    # persistence requirement.
+    if not lookahead_override:
+        trend_days = _trend_days_outside_band(
+            snaps, cfg.target_min, cfg.target_max,
         )
+        if trend_days < cfg.min_trend_days:
+            return _build(
+                state=current_dose_mL, suggested=current_dose_mL,
+                confidence="medium",
+                reason=(
+                    f"{cfg.param_label} median {kh_median:.2f} "
+                    f"{cfg.value_unit} outside target band, but only "
+                    f"{trend_days} consecutive day(s) trending — "
+                    f"need {cfg.min_trend_days} before adjusting."
+                ),
+            )
 
     # 6) Compute suggestion using spec potency, spread over correction_period_days
     # (current_dose check moved to the top — see branch 0).
@@ -788,8 +865,27 @@ def compute_recommendation(
             f"despite the recent acknowledgment. "
         )
 
+    # When the look-ahead is what let this through the hysteresis hold, say so
+    # up front — otherwise the reason reads as "median is basically on target,
+    # here's a dose change", which looks like a bug to the user.
+    lookahead_note = ""
+    if lookahead_override:
+        edge = (
+            band_low if projected_value is not None
+            and projected_value < band_low else band_high
+        )
+        lookahead_note = (
+            f"↘ Trending out of band — {cfg.param_label} median "
+            f"{kh_median:.2f} {cfg.value_unit} is still inside the "
+            f"hysteresis band, but the observed slope "
+            f"{obs_slope:+.3f} {cfg.value_unit}/day projects "
+            f"{projected_value:.2f} in {projection_days:.0f} days, past "
+            f"the {edge:.2f} edge. Acting now rather than waiting for the "
+            f"excursion. "
+        )
+
     reason = (
-        f"{override_note}"
+        f"{override_note}{lookahead_note}"
         f"{cfg.param_label} median {kh_median:.2f} {cfg.value_unit} "
         f"{'below' if delta_kh > 0 else 'above'} target midpoint "
         f"{midpoint:.2f} (delta {-delta_kh:+.2f}); spec potency "

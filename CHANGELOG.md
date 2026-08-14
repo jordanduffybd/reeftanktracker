@@ -2,6 +2,81 @@
 
 > **Compatibility convention:** every release entry below states the HA Core (and Supervisor / HAOS, when relevant) versions it was developed and tested against. **Compatibility is verified on those versions only.** Upgrading HA past the listed version isn't guaranteed to work — check the next release for an updated compat line before upgrading. If you want to upgrade HA first and don't see a release here that lists the new version, hold off or test on a non-prod instance first.
 
+## 0.5.12 — Advisor sees every reading, acts on trends, and stops fighting the recorder
+
+**Tested against:** HA Core `2026.7.2` (production), with kh-keeper-bridge `0.1.16+`.
+
+### Why
+
+Four problems found by auditing a live install after an upgrade to HA 2026.7.2.
+
+1. **The advisor could not see manual tests, and threw away most auto ones.** The daily snapshotter read the configured `kh_source` entity's *instantaneous* state at 23:55. On a day with four KH Keeper tests that discarded three of them and made the snapshot hostage to whenever the last test happened to land. Manual Hanna titrations never entered the model at all — they land in the coordinator's readings, not on the Keeper entity — so the most accurate measurements available were invisible to dosing.
+
+2. **A slow sustained drift was invisible.** Hysteresis exists to stop the advisor oscillating around the band edges, but the hysteresis gate returned *before* the trend rule ever ran. In production this held KH at a median of 8.44 against a 8.5–8.9 target with a measured slope of **-0.056 dKH/day** — a clear, sustained decline — reporting "within target band; holding current dose" every day until it eventually fell out of band. The excursion the advisor exists to prevent was the thing that finally triggered it.
+
+3. **Statistics imports collided with the recorder every hour.** `ReefLatestSensor` carries `state_class = measurement`, so HA's recorder already compiles hourly statistics for `sensor.<param>_latest`. `_import_statistic` *also* wrote to the same `statistic_id`, so both raced for one row: `UNIQUE constraint failed: statistics.metadata_id, statistics.start_ts`, surfaced by HA 2026.x as an hourly `Blocked attempt to insert duplicated statistic rows` error (92 occurrences over four days in production).
+
+4. **Two blank white cards on the advisor views.** In a sections view a `conditional` card whose condition is false still occupies its grid cell and paints an empty card.
+
+### What
+
+**Daily value aggregation (`alk_advisor._daily_value`).** The daily snapshot is now the **median of every reading in the 24h window**, and **manual/ICP readings override auto readings entirely** when both exist — a Hanna titration is materially more accurate than the Keeper's colourimetric result, so it replaces rather than averages with it. Handles Jordan's variable cadence (1–4 Keeper tests/day) and shrugs off a single bad titration. Snapshots now record `kh_kind` (`manual`/`auto`/`live`) and `kh_samples` so the derivation is visible. Installs that don't route their KH source through an auto-source fall back to the previous instantaneous read, unchanged.
+
+**Hysteresis look-ahead.** New `advisor_hysteresis_lookahead_days` option (default **7**, 0 disables). When the observed slope projects the median clear of the *hysteresis* band within that many days, the hysteresis hold is skipped and a recommendation is computed. Deliberately projected against the hysteresis band rather than the target band: a dead-flat 8.4 against a 8.5 floor "projects" 8.4 and would otherwise trigger a dose change on a tank that is not moving. The escape hatch applies **only** to the hysteresis hold — a median already outside the band still goes through the normal consecutive-days trend gate, so a flat long-standing excursion can't skip its persistence requirement. Step cap, floor guard and cooldown all still apply. New `projected_value`, `projection_days` and `projected_breach` attributes, and the reason text says when the look-ahead drove the call.
+
+**Statistics: the recorder owns the present, the import path owns the past.** `_import_statistic` and `backfill_statistics` now skip any reading sampled within `LIVE_STATS_WINDOW` (2h) — those hours are the recorder's, and its value is already correct. Historical imports (CSV/ICP with old sample dates), which are the entire reason the import path exists, are unaffected. Backfill logs how many readings it skipped for this reason.
+
+**Dashboard `visibility:` instead of `conditional`.** Both the alk and per-element advisor headline cards now use each card's top-level `visibility:` key (supported since HA 2024.8) instead of `conditional` wrappers inside a `vertical-stack`. `visibility` removes a hidden card from the layout entirely rather than leaving an empty cell.
+
+### Upgrade notes
+
+- **Check your KH source.** Settings → Devices & Services → Reef Tank Tracker → Configure → advisor section. If `advisor_kh_source` points at `sensor.kh_keeper_kh`, manual tests still won't be picked up unless they're also recorded as readings — point it at `sensor.kh_latest` to get manual-overrides-auto behaviour end to end.
+- The look-ahead is **on by default at 7 days**. If you want the old pure-hysteresis behaviour, set `advisor_hysteresis_lookahead_days` to 0.
+- Existing snapshots stay valid — `kh_kind`/`kh_samples` are optional and absent on older entries.
+
+## 0.5.11 — KH Keeper calibration events + implicit acknowledgement from doser changes
+
+**Tested against:** HA Core `2026.4.4` (dev), with kh-keeper-bridge `0.1.15+`.
+
+### Why
+
+Two related blind spots in 0.5.10 that conspired to corrupt the advisor's model of the tank:
+
+1. **Calibration-driven step-changes were being attributed to dose.** When the KH Keeper's `adjustment` offset changed (Hanna drop-test calibration, Smart Reef mobile app, or the device's physical UI), every subsequent reading shifted by the delta. The advisor's daily snapshotter would capture a snapshot just after a calibration and feed the step-change into the empirical-potency learner. In production this resulted in a 6.14× spec-drift warning on a Foundation B head — purely an artefact of a snapshot recorded ~6h after a +0.44 dKH calibration.
+
+2. **Out-of-band dose edits never reached the advisor.** When the user bumped Foundation B in the ReefBeat mobile app (or any non-dashboard path), the advisor stayed in pre-change cooldown logic until they remembered to click the dashboard's Acknowledge button — which they often didn't, so subsequent recommendations were built on stale state.
+
+### What
+
+**Calibration listener** — kh-keeper-bridge 0.1.15 publishes `sensor.kh_keeper_last_calibration` with the calibration payload in attributes (`prev`, `new`, `delta`, `source`, `hanna_value`, `serial`). A new `CalibrationEventListener` subscribes to its state changes and:
+
+1. Records the event under `advisor.kh.calibration_events`.
+2. Records the Hanna value as a manual KH reading with `method="Hanna ULR (KH Keeper drop test)"` and `source="manual"` — high-confidence ground truth.
+3. Marks a ±24h settling window via `coordinator.is_in_calibration_settling_window(at)`; the daily alk snapshotter skips captures inside it.
+
+Auto-derivation: when the configured KH source is `sensor.kh_keeper_*`, the calibration entity is inferred as `sensor.kh_keeper_last_calibration`. Users with a different KH source (Trident, manual helper) get a no-op listener. De-dupe: events are stored by `(serial, ts)` so retained MQTT republishes on HA restart don't duplicate.
+
+**Dose-change listener (implicit ack)** — a new `DoseChangeListener` watches every configured doser head (alk + per-element) for state changes on its `_daily_dose` entity. When a change arrives:
+
+- **NEW within tolerance of SUGGESTED** (10% relative or 0.1 mL absolute, whichever larger) → records implicit `Acknowledgment(implicit=True)`.
+- **NEW moved toward SUGGESTED** but outside tolerance → records partial implicit ack (still triggers cooldown — the user made a deliberate change, just not the full one).
+- **NEW moved away from SUGGESTED** → records `DemandChange` ("Auto-detected: user changed dose X → Y; treating as demand change") so the advisor knows tank dynamics have shifted.
+
+Multi-head parameters are handled by comparing the TOTAL dose across all configured heads, not single-head deltas. Debounced to 60s so ReefBeat's transient values during a manual edit don't fire multiple acks. Minimum 0.05 mL change to filter sensor jitter.
+
+Acknowledgment storage gains `implicit` / `suggested_value_mL` / `tolerance_pct` diagnostic fields when set; explicit button-press acks leave them absent (back-compat).
+
+### Tests
+
+- `tests/test_calibration_listener.py` — 14 tests: entity-name derivation, event recording with Hanna manual-reading insertion, device-source phantom-reading guard, de-dupe on (serial, ts), settling window inside/outside 24h, listener idle when no entity configured, payload validation, snapshotter skip/capture behaviour.
+- `tests/test_dose_change_listener.py` — 9 tests: within-tolerance implicit ack, partial-toward implicit ack, moved-away demand change, no-recommendation no-op, sub-MIN change jitter, `unavailable` state ignored, explicit-ack does not set implicit fields, implicit-ack diagnostic fields persisted.
+
+All 178 tests pass (155 previous + 14 calibration + 9 dose-change).
+
+### Restart needed?
+
+Yes — new listeners wire into setup. After upgrading kh-keeper-bridge to 0.1.15 first, then reeftanktracker to 0.5.11, reload both add-ons.
+
 ## 0.5.10 — Severe excursions override advisor cooldown
 
 **Tested against:** HA Core `2026.4.4` (dev).

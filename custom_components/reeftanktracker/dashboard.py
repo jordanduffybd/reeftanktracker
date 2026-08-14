@@ -420,44 +420,38 @@ def _build_param_advisor_view(
     defaults = param_advisor.PARAM_DEFAULTS.get(param_id, {})
     unit = defaults.get("value_unit", "ppm")
 
-    # Headline: same conditional-banner-or-tile as the alk advisor view.
-    headline_card = {
-        "type": "vertical-stack",
-        "cards": [
-            {
-                "type": "conditional",
-                "conditions": [
-                    {"condition": "state", "entity": advisor_eid,
-                     "state": ["unknown", "unavailable"]},
-                ],
-                "card": {
-                    "type": "markdown",
-                    "content": (
-                        "## ⏸️ " + title + " advisor paused\n\n"
-                        "{{ state_attr('" + advisor_eid + "', 'reason') "
-                        "or 'Advisor not yet enabled.' }}"
-                    ),
-                },
-            },
-            {
-                "type": "conditional",
-                "conditions": [
-                    {"condition": "state", "entity": advisor_eid,
-                     "state_not": "unknown"},
-                    {"condition": "state", "entity": advisor_eid,
-                     "state_not": "unavailable"},
-                ],
-                "card": {
-                    "type": "tile",
-                    "entity": advisor_eid,
-                    "name": f"Suggested daily dose ({title})",
-                    "icon": "mdi:test-tube",
-                    "vertical": True,
-                    "state_content": ["state", "last-changed"],
-                },
-            },
-        ],
-    }
+    # Headline: same banner-or-tile pair as the alk advisor view, using
+    # per-card `visibility:` rather than `conditional` wrappers — see the
+    # comment on `headline_cards` in the alk view builder for why
+    # conditionals leave blank cells in a sections view.
+    headline_cards = [
+        {
+            "type": "markdown",
+            "visibility": [
+                {"condition": "state", "entity": advisor_eid,
+                 "state": ["unknown", "unavailable"]},
+            ],
+            "content": (
+                "## ⏸️ " + title + " advisor paused\n\n"
+                "{{ state_attr('" + advisor_eid + "', 'reason') "
+                "or 'Advisor not yet enabled.' }}"
+            ),
+        },
+        {
+            "type": "tile",
+            "entity": advisor_eid,
+            "name": f"Suggested daily dose ({title})",
+            "icon": "mdi:test-tube",
+            "vertical": True,
+            "state_content": ["state", "last-changed"],
+            "visibility": [
+                {"condition": "state", "entity": advisor_eid,
+                 "state_not": "unknown"},
+                {"condition": "state", "entity": advisor_eid,
+                 "state_not": "unavailable"},
+            ],
+        },
+    ]
 
     # Show-your-work card — markdown so we can hide rows that are
     # null when the advisor doesn't have data yet. Uses the same
@@ -600,7 +594,7 @@ def _build_param_advisor_view(
                     {"type": "heading",
                      "heading": f"{title} dosing advisor",
                      "icon": "mdi:test-tube"},
-                    headline_card,
+                    *headline_cards,
                 ],
             },
             {
@@ -782,53 +776,51 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
         ],
     }
 
-    # Headline card. Two conditional variants stacked: a markdown
-    # "advisor paused" banner when state is unknown/unavailable (e.g.
-    # ReefBeat doser offline for maintenance), and the regular tile
-    # showing the suggested-dose number when state is a real value.
-    # This stops the prod dashboard from showing "Suggested daily
-    # dose: Unknown" with no context when devices are off — instead
-    # the user sees the actionable reason text large + prominent.
-    headline_card = {
-        "type": "vertical-stack",
-        "cards": [
-            {
-                "type": "conditional",
-                "conditions": [
-                    {"condition": "state", "entity": advisor_eid,
-                     "state": ["unknown", "unavailable"]},
-                ],
-                "card": {
-                    "type": "markdown",
-                    "content": (
-                        "## ⏸️ Advisor paused\n\n"
-                        "{{ state_attr('" + advisor_eid + "', 'reason') "
-                        "or 'No reason recorded.' }}\n\n"
-                        "_Reason last updated "
-                        "{{ relative_time(states['" + advisor_eid + "'].last_changed) "
-                        "if states['" + advisor_eid + "'] else 'unknown' }}._"
-                    ),
-                },
-            },
-            {
-                "type": "conditional",
-                "conditions": [
-                    {"condition": "state", "entity": advisor_eid,
-                     "state_not": "unknown"},
-                    {"condition": "state", "entity": advisor_eid,
-                     "state_not": "unavailable"},
-                ],
-                "card": {
-                    "type": "tile",
-                    "entity": advisor_eid,
-                    "name": "Suggested daily dose",
-                    "icon": "mdi:test-tube",
-                    "vertical": True,
-                    "state_content": ["state", "last-changed"],
-                },
-            },
-        ],
-    }
+    # Headline cards. Two variants: a markdown "advisor paused" banner when
+    # state is unknown/unavailable (e.g. ReefBeat doser offline for
+    # maintenance), and the regular tile showing the suggested-dose number
+    # when state is a real value. This stops the dashboard showing
+    # "Suggested daily dose: Unknown" with no context when devices are off.
+    #
+    # These use each card's top-level `visibility:` key rather than wrapping
+    # them in `conditional` cards inside a `vertical-stack`. In a sections
+    # view a false `conditional` still occupies its grid cell and paints an
+    # empty card — which is exactly what showed up in production on HA
+    # 2026.7 as two blank white boxes on this view. `visibility` removes the
+    # card from the layout entirely, and has been the supported mechanism
+    # since HA 2024.8. Returned as a list so the caller can splat them in as
+    # siblings; a stack wrapper would reintroduce the same layout problem.
+    headline_cards = [
+        {
+            "type": "markdown",
+            "visibility": [
+                {"condition": "state", "entity": advisor_eid,
+                 "state": ["unknown", "unavailable"]},
+            ],
+            "content": (
+                "## ⏸️ Advisor paused\n\n"
+                "{{ state_attr('" + advisor_eid + "', 'reason') "
+                "or 'No reason recorded.' }}\n\n"
+                "_Reason last updated "
+                "{{ relative_time(states['" + advisor_eid + "'].last_changed) "
+                "if states['" + advisor_eid + "'] else 'unknown' }}._"
+            ),
+        },
+        {
+            "type": "tile",
+            "entity": advisor_eid,
+            "name": "Suggested daily dose",
+            "icon": "mdi:test-tube",
+            "vertical": True,
+            "state_content": ["state", "last-changed"],
+            "visibility": [
+                {"condition": "state", "entity": advisor_eid,
+                 "state_not": "unknown"},
+                {"condition": "state", "entity": advisor_eid,
+                 "state_not": "unavailable"},
+            ],
+        },
+    ]
 
     # Show-your-work card. Renders attribute rows ONLY when the
     # underlying value is meaningful (not None / "unknown" / empty).
@@ -1042,7 +1034,7 @@ def _build_advisor_view(uid_map: dict[str, str]) -> dict[str, Any]:
                 "cards": [
                     {"type": "heading", "heading": "Alkalinity dosing advisor",
                      "icon": "mdi:test-tube"},
-                    headline_card,
+                    *headline_cards,
                 ],
             },
             {

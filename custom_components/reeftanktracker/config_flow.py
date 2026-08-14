@@ -297,6 +297,9 @@ class ReefTankOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(OPT.OPT_HYSTERESIS): _num(
                 OPT.OPT_HYSTERESIS, mn=0, mx=2.0, step=0.01,
             ),
+            vol.Optional(OPT.OPT_HYSTERESIS_LOOKAHEAD_DAYS): _num(
+                OPT.OPT_HYSTERESIS_LOOKAHEAD_DAYS, mn=0, mx=30, step=1,
+            ),
             vol.Optional(OPT.OPT_MIN_SAMPLES_AFTER_EVENT): _num(
                 OPT.OPT_MIN_SAMPLES_AFTER_EVENT, mn=1, mx=14, step=1,
             ),

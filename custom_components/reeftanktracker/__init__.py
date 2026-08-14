@@ -44,10 +44,19 @@ from .const import (
     SOURCE_ICP,
     SOURCE_MANUAL,
 )
-from .alk_advisor import AlkAdvisorSnapshotter, DEFAULTS as ADVISOR_DEFAULTS
+from .alk_advisor import (
+    AlkAdvisorSnapshotter,
+    DEFAULTS as ADVISOR_DEFAULTS,
+    OPT_KH_SOURCE,
+)
 from .auto_source_listener import AutoSourceListener
+from .calibration_listener import (
+    CalibrationEventListener,
+    derive_calibration_entity,
+)
 from .config_flow import auto_source_key
 from .coordinator import ReefDataCoordinator
+from .dose_change_listener import DoseChangeListener
 from .dashboard import (
     diagnose_dashboard,
     regenerate_dashboard,
@@ -397,6 +406,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     snapshotter = AlkAdvisorSnapshotter(hass, coordinator)
     await snapshotter.async_start()
     entry.async_on_unload(snapshotter.async_stop)
+
+    # KH Keeper calibration listener. The bridge (0.1.15+) publishes
+    # `sensor.kh_keeper_last_calibration` with the event payload in
+    # attributes; we track it so the Hanna value gets recorded as a
+    # high-confidence manual reading and the empirical-potency
+    # derivation doesn't attribute the resulting KH step-change to
+    # dose. Entity is auto-derived from the configured KH source so
+    # no extra config is required in the common case.
+    kh_source = coordinator.get_advisor_config().get(OPT_KH_SOURCE) or ""
+    cal_entity = derive_calibration_entity(kh_source)
+    cal_listener = CalibrationEventListener(hass, coordinator, cal_entity)
+    await cal_listener.async_start()
+    entry.async_on_unload(cal_listener.async_stop)
+
+    # Dose-change listener — treats out-of-band dose edits (e.g. the
+    # ReefBeat mobile app) as implicit acknowledgements when they land
+    # near the active suggestion, and as demand changes when they move
+    # the opposite direction. Without this the advisor stayed stuck in
+    # pre-change cooldown when the user forgot to click Acknowledge.
+    dose_listener = DoseChangeListener(hass, coordinator)
+    await dose_listener.async_start()
+    entry.async_on_unload(dose_listener.async_stop)
 
     # Auto-install the Lovelace dashboard. Deferred until HA is started
     # so the lovelace integration's data is fully populated — calling
